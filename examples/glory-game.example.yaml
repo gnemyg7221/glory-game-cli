@@ -1,0 +1,43 @@
+schemaVersion: 1
+profile: glory-oppo-cocos-3.8-v1
+game:
+  name: ExampleGame
+  packageName: com.example.game.nearme.gamecenter
+  versionCode: 1
+  versionName: 1.0.0
+  orientation: portrait
+  offlineGame: false
+cocos:
+  version: 3.8.6
+  apiLevel: 29
+  appABIs:
+    - arm64-v8a
+    - armeabi-v7a
+  buildRoot: build
+  timeoutMinutes: 30
+android:
+  javaVersion: 11
+  agpVersion: 7.4.2
+  gradleVersion: 7.6.3
+  compileSdk: 29
+  targetSdk: 29
+  buildToolsVersion: 30.0.3
+  ndkVersion: 21.4.7075529
+  cmakeVersion: 3.22.1
+  signing:
+    storeFile: REQUIRED_FOR_RELEASE
+    storePasswordEnv: GLORY_RELEASE_STORE_PASSWORD
+    keyAlias: REQUIRED_FOR_RELEASE
+    keyPasswordEnv: GLORY_RELEASE_KEY_PASSWORD
+    certificateSha256: ""
+sdk:
+  submodulePath: native/engine/android/glory-adsdk
+  submoduleUrl: git@github.com:superWalnuts/OppoGameApkAdSdk.git
+  commit: ccaef3e1ef6821928c850bd1858acafa7ab975f5
+  gameCenterAppKey: REQUIRED
+  providerAppId: REQUIRED
+  supplierAppId: REQUIRED
+  gameCenterAppSecretEnv: GLORY_GAME_CENTER_APP_SECRET
+privacy:
+  policyUrl: REQUIRED
+  skipBeforeTime: REQUIRED

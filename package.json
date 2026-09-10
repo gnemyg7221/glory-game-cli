@@ -1,0 +1,20 @@
+{
+  "name": "@glory/game-cli",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "glory-game": "bin/glory-game.mjs"
+  },
+  "scripts": {
+    "check": "node --check bin/glory-game.mjs",
+    "inspect": "node bin/glory-game.mjs inspect",
+    "test": "node --check bin/glory-game.mjs && node bin/glory-game.mjs self-test --project test/workspaces/cocos-3.8.6-fresh --config ../../fixtures/cocos-3.8.6.config.yaml"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "game": {
+    "name": "CliFixture",
+    "packageName": "com.example.cli.fixture",
+    "versionCode": 1,
+    "versionName": "1.0.0",
+    "orientation": "portrait",
+    "offlineGame": false
+  },
+  "cocos": {
+    "version": "3.8.6",
+    "apiLevel": 29,
+    "appABIs": ["arm64-v8a", "armeabi-v7a"],
+    "buildRoot": "build",
+    "timeoutMinutes": 30
+  },
+  "android": {
+    "javaVersion": 17,
+    "agpVersion": "8.0.2",
+    "gradleVersion": "8.0.2",
+    "compileSdk": 29,
+    "targetSdk": 29,
+    "buildToolsVersion": "30.0.3",
+    "ndkVersion": "21.4.7075529",
+    "cmakeVersion": "3.22.1"
+  },
+  "sdk": {
+    "submodulePath": "native/engine/android/glory-adsdk",
+    "submoduleUrl": "git@github.com:superWalnuts/OppoGameApkAdSdk.git",
+    "commit": "0000000000000000000000000000000000000000",
+    "gameCenterAppKey": "fixture-app-key",
+    "providerAppId": "fixture-provider",
+    "supplierAppId": "fixture-supplier",
+    "gameCenterAppSecretEnv": "GLORY_GAME_CENTER_APP_SECRET"
+  },
+  "privacy": {
+    "policyUrl": "https://test.example.com/privacy",
+    "skipBeforeTime": "2026-01-01 00:00:00"
+  }
+}

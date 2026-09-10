@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    android:installLocation="auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.example.cli.fixture">
+    <queries>
+        <provider
+            android:authorities="com.gcsdk.msp.duidprovider"
+            tools:replace="android:authorities" />
+        <provider
+            android:authorities="com.oplus.statistics.provider"
+            tools:replace="android:authorities" />
+    </queries>
+
+
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+
+    <application
+        android:extractNativeLibs="true"
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:usesCleartextTraffic="true"
+        android:icon="@mipmap/ic_launcher"
+        android:name="com.cocos.game.MyApplication"
+        android:requestLegacyExternalStorage="true"
+        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+        tools:replace="android:allowBackup,android:appComponentFactory">
+
+        <!-- Tell CocosNativeActivity the name of our .so -->
+        <meta-data android:name="android.app.lib_name"
+            android:value="cocos" />
+        <meta-data android:name="debug_mode" android:value="false" />
+        <meta-data android:name="is_offline_game" android:value="false" />
+        <meta-data android:name="app_key" android:value="fixture-app-key" />
+        <uses-library android:name="org.apache.http.legacy" android:required="false" />
+
+
+
+
+
+        <activity
+            android:name="com.cocos.game.AppActivity"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize"
+            android:label="@string/app_name"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:launchMode="singleTask"
+            android:exported="true">
+        </activity>
+        <!-- glory-game-managed:v1 -->
+        <activity
+            android:name="com.glory.adsdk.launch.GloryAdLaunchActivity"
+            android:label="@string/app_name"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout"
+            android:exported="true"
+            android:launchMode="singleTask"
+            tools:replace="android:exported">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.cocos.lib.CocosEditBoxActivity"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize"
+            android:screenOrientation="behind"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen" />
+    </application>
+
+</manifest>
