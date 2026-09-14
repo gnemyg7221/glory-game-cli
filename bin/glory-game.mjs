@@ -93,6 +93,7 @@ function usage() {
   macOS、Cocos Creator 3.8.x、Android，以及已识别项目结构的 glory-adsdk 接入。
 
 快速接入：
+  init-config 问包名；启动场景写入 glory-game.yaml。对方电脑不需要本机 Cocos profiles。
   integrate --scaffold 可在暂不填写 SDK 后台/隐私参数时完成 SDK、Cocos 和 Android Debug 编译。
   该模式生成的 APK 仅用于验证接入和编译，不能发布；以后填写真实参数后重新 integrate 即可。
 
@@ -236,6 +237,9 @@ function validateConfig(config) {
     if (config.game?.orientation && !['portrait', 'landscape'].includes(config.game.orientation)) {
         errors.push('game.orientation 只能是 portrait 或 landscape');
     }
+    if (!isMissingConfigValue(config.cocos?.startScene) && typeof config.cocos.startScene !== 'string') {
+        errors.push('cocos.startScene 必须是场景路径字符串，例如 assets/scene/Main.scene');
+    }
     if (errors.length) throw new CliError(`配置无效：\n- ${errors.join('\n- ')}`);
 }
 
@@ -245,8 +249,6 @@ function validateApplyConfig(config) {
     const required = [
         ['game.versionCode', config.game?.versionCode],
         ['game.versionName', config.game?.versionName],
-        ['game.orientation', config.game?.orientation],
-        ['game.offlineGame', config.game?.offlineGame],
         ['android.agpVersion', config.android?.agpVersion],
         ['android.gradleVersion', config.android?.gradleVersion],
         ['android.compileSdk', config.android?.compileSdk],
@@ -257,23 +259,12 @@ function validateApplyConfig(config) {
         ['sdk.submodulePath', config.sdk?.submodulePath],
         ['sdk.submoduleUrl', config.sdk?.submoduleUrl],
         ['sdk.commit', config.sdk?.commit],
-        ['sdk.gameCenterAppKey', config.sdk?.gameCenterAppKey],
-        ['sdk.providerAppId', config.sdk?.providerAppId],
-        ['sdk.supplierAppId', config.sdk?.supplierAppId],
         ['sdk.gameCenterAppSecretEnv', config.sdk?.gameCenterAppSecretEnv],
-        ['privacy.policyUrl', config.privacy?.policyUrl],
-        ['privacy.skipBeforeTime', config.privacy?.skipBeforeTime],
     ];
     for (const [name, value] of required) {
         if (value === undefined || value === null || value === '' || value === 'REQUIRED') errors.push(`缺少真实参数 ${name}`);
     }
     if (typeof config.game?.offlineGame !== 'boolean') errors.push('game.offlineGame 必须是布尔值');
-    if (!/^https:\/\//.test(config.privacy?.policyUrl || '') || /example\.invalid/.test(config.privacy?.policyUrl || '')) {
-        errors.push('privacy.policyUrl 必须是真实 HTTPS 地址');
-    }
-    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(config.privacy?.skipBeforeTime || '')) {
-        errors.push('privacy.skipBeforeTime 格式必须为 YYYY-MM-DD HH:mm:ss');
-    }
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.sdk?.gameCenterAppSecretEnv || '')) {
         errors.push('sdk.gameCenterAppSecretEnv 不是有效的环境变量名');
     }
@@ -292,6 +283,142 @@ function detectedOrientation(project) {
     return height >= width ? 'portrait' : 'landscape';
 }
 
+function readOptionalJson(path) {
+    if (!existsSync(path)) return null;
+    try {
+        return JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+        return null;
+    }
+}
+
+function isSceneUuid(value) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+function listProjectScenes(project) {
+    const files = findFiles(join(project, 'assets'), (path) => path.endsWith('.scene'))
+        .sort((a, b) => a.localeCompare(b));
+    return files.map((abs) => {
+        const relativePath = relative(project, abs).split(sep).join('/');
+        const meta = readOptionalJson(`${abs}.meta`);
+        return {
+            abs,
+            path: relativePath,
+            uuid: meta?.uuid || null,
+            name: basename(abs, '.scene'),
+        };
+    });
+}
+
+function matchScene(scenes, value) {
+    const normalized = String(value || '').trim().replace(/\\/g, '/').replace(/^db:\/\//, '');
+    if (!normalized) return null;
+    return isSceneUuid(normalized)
+        ? scenes.find((scene) => scene.uuid === normalized)
+        : scenes.find((scene) => scene.path === normalized || scene.path === `assets/${normalized}` || scene.name === normalized);
+}
+
+function sceneCustomScriptCount(absPath) {
+    const types = [...readText(absPath).matchAll(/"__type__"\s*:\s*"([^"]+)"/g)].map((match) => match[1]);
+    return types.filter((type) => !type.startsWith('cc.') && !type.startsWith('CC')).length;
+}
+
+function collectCocosStartSceneHints(project) {
+    const hints = [];
+    const profileDir = join(project, 'profiles', 'v2', 'packages');
+    if (!existsSync(profileDir)) return hints;
+    const rank = {
+        'android.json': 1,
+        'builder.json': 2,
+        'oppo-mini-game.json': 3,
+        'wechatgame.json': 4,
+        'vivo-mini-game.json': 5,
+        'honor-mini-game.json': 6,
+    };
+    for (const name of readdirSync(profileDir)) {
+        if (!rank[name]) continue;
+        const json = readOptionalJson(join(profileDir, name));
+        if (!json) continue;
+        const pushHint = (value, reason) => {
+            if (!value) return;
+            hints.push({ value, reason, rank: rank[name], file: name });
+        };
+        pushHint(json.common?.startScene, `Cocos ${name} 构建配置`);
+        pushHint(json.builder?.common?.startScene, `Cocos ${name} 构建配置`);
+        const onlyScene = json.common?.scenes?.length === 1 ? json.common.scenes[0] : null;
+        pushHint(onlyScene?.uuid || onlyScene?.url, `Cocos ${name} 只包含一个场景`);
+        const tasks = Object.values(json.BuildTaskManager?.taskMap || {});
+        const latest = tasks.sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
+        pushHint(latest?.options?.startScene, 'Cocos 上次构建任务');
+    }
+    return hints.sort((a, b) => a.rank - b.rank);
+}
+
+function detectStartScene(project) {
+    const scenes = listProjectScenes(project);
+    if (!scenes.length) return null;
+    for (const hint of collectCocosStartSceneHints(project)) {
+        const match = matchScene(scenes, hint.value);
+        if (match?.uuid) return { path: match.path, uuid: match.uuid, reason: hint.reason };
+    }
+    if (scenes.length === 1 && scenes[0].uuid) {
+        return { path: scenes[0].path, uuid: scenes[0].uuid, reason: '工程里只有一个场景' };
+    }
+    const scored = scenes.map((scene) => ({ ...scene, scripts: sceneCustomScriptCount(scene.abs) }));
+    const withScripts = scored.filter((scene) => scene.scripts > 0);
+    const empty = scored.filter((scene) => scene.scripts === 0);
+    if (withScripts.length === 1 && withScripts[0].uuid && empty.length === scored.length - 1) {
+        return { path: withScripts[0].path, uuid: withScripts[0].uuid, reason: '另一个场景是空场景' };
+    }
+    return null;
+}
+
+function resolveStartSceneUuid(project, startScene) {
+    const scenes = listProjectScenes(project);
+    if (!scenes.length) throw new CliError('工程 assets 下没有 .scene 文件。');
+    const match = matchScene(scenes, startScene);
+    if (!match) {
+        throw new CliError(`cocos.startScene 无效：${startScene}\n可选场景：\n- ${scenes.map((scene) => scene.path).join('\n- ')}`);
+    }
+    if (!match.uuid) throw new CliError(`场景缺少 uuid，无法构建：${match.path}`);
+    return match.uuid;
+}
+
+function resolveBuildStartScene(project, config) {
+    if (!isMissingConfigValue(config.cocos?.startScene)) {
+        return {
+            path: String(config.cocos.startScene),
+            uuid: resolveStartSceneUuid(project, config.cocos.startScene),
+            reason: 'glory-game.yaml',
+        };
+    }
+    const detected = detectStartScene(project);
+    if (!detected) {
+        const scenes = listProjectScenes(project).map((scene) => scene.path).join('\n- ');
+        throw new CliError(`无法识别启动场景，请在 glory-game.yaml 填写 cocos.startScene。\n可选场景：\n- ${scenes}`);
+    }
+    return detected;
+}
+
+async function askStartScene(rl, project) {
+    const scenes = listProjectScenes(project);
+    if (!scenes.length) throw new CliError('工程 assets 下没有 .scene 文件。');
+    console.log('未能自动识别启动场景，请按序号选择：');
+    scenes.forEach((scene, index) => {
+        console.log(`  ${index + 1}) ${scene.path}`);
+    });
+    const answer = await askValue(rl, '选择启动场景序号', {
+        validate: (value) => {
+            const index = Number(value);
+            return Number.isInteger(index) && index >= 1 && index <= scenes.length
+                ? null
+                : `请输入 1-${scenes.length}`;
+        },
+    });
+    return scenes[Number(answer) - 1].path;
+}
+
 function createScaffoldConfig(project, config) {
     const value = JSON.parse(JSON.stringify(config));
     value.game ||= {};
@@ -301,11 +428,11 @@ function createScaffoldConfig(project, config) {
         ? detectedOrientation(project) || 'portrait'
         : value.game.orientation;
     if (isMissingConfigValue(value.game.offlineGame)) value.game.offlineGame = false;
-    if (isMissingConfigValue(value.sdk.gameCenterAppKey)) value.sdk.gameCenterAppKey = 'PENDING_CONFIGURATION';
-    if (isMissingConfigValue(value.sdk.providerAppId)) value.sdk.providerAppId = 'PENDING_CONFIGURATION';
-    if (isMissingConfigValue(value.sdk.supplierAppId)) value.sdk.supplierAppId = 'PENDING_CONFIGURATION';
-    if (isMissingConfigValue(value.privacy.policyUrl)) value.privacy.policyUrl = 'https://pending.invalid/privacy';
-    if (isMissingConfigValue(value.privacy.skipBeforeTime)) value.privacy.skipBeforeTime = '1970-01-01 00:00:00';
+    if (isMissingConfigValue(value.sdk.gameCenterAppKey)) value.sdk.gameCenterAppKey = '';
+    if (isMissingConfigValue(value.sdk.providerAppId)) value.sdk.providerAppId = '';
+    if (isMissingConfigValue(value.sdk.supplierAppId)) value.sdk.supplierAppId = '';
+    if (isMissingConfigValue(value.privacy.policyUrl)) value.privacy.policyUrl = '';
+    if (isMissingConfigValue(value.privacy.skipBeforeTime)) value.privacy.skipBeforeTime = '';
     return value;
 }
 
@@ -332,6 +459,7 @@ function printConfigStatus(project, configPath, config) {
             ['game.packageName', config.game?.packageName],
             ['game.orientation', config.game?.orientation],
             ['game.offlineGame', config.game?.offlineGame],
+            ['cocos.startScene', config.cocos?.startScene],
         ]],
         ['SDK 后台', [
             ['sdk.gameCenterAppKey', config.sdk?.gameCenterAppKey],
@@ -414,6 +542,7 @@ function creatorAndroidToolchain(creatorPath) {
 function initialConfig(project) {
     const projectPackage = readJson(join(project, 'package.json'), 'Cocos package.json');
     const version = projectPackage.creator?.version;
+    const detected = detectStartScene(project);
     return {
         schemaVersion: 1,
         profile: VERIFIED_COCOS_38_PROFILE.name,
@@ -422,33 +551,19 @@ function initialConfig(project) {
             packageName: 'REQUIRED',
             versionCode: 1,
             versionName: '1.0.0',
-            orientation: null,
-            offlineGame: null,
+            orientation: detectedOrientation(project) || 'portrait',
+            offlineGame: false,
         },
         cocos: {
             version,
             ...VERIFIED_COCOS_38_PROFILE.cocos,
+            startScene: detected?.path || 'REQUIRED',
         },
         android: {
             ...VERIFIED_COCOS_38_PROFILE.android,
-            signing: {
-                storeFile: 'REQUIRED_FOR_RELEASE',
-                storePasswordEnv: 'GLORY_RELEASE_STORE_PASSWORD',
-                keyAlias: 'REQUIRED_FOR_RELEASE',
-                keyPasswordEnv: 'GLORY_RELEASE_KEY_PASSWORD',
-                certificateSha256: '',
-            },
         },
         sdk: {
             ...VERIFIED_COCOS_38_PROFILE.sdk,
-            gameCenterAppKey: 'REQUIRED',
-            providerAppId: 'REQUIRED',
-            supplierAppId: 'REQUIRED',
-            gameCenterAppSecretEnv: 'GLORY_GAME_CENTER_APP_SECRET',
-        },
-        privacy: {
-            policyUrl: 'REQUIRED',
-            skipBeforeTime: 'REQUIRED',
         },
     };
 }
@@ -551,11 +666,17 @@ async function interactiveConfig(project) {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     console.log(`检测到 Cocos 工程：${project}`);
     console.log(`已复用配置：${value.profile}（Cocos/Java/Gradle/NDK/ABI/SDK 版本）`);
-    console.log('初始化只问一个问题，其余游戏参数可以以后分批补。\n');
+    console.log('初始化只问包名。启动场景、方向、NDK、AGP、SDK 地址都用识别结果或默认值。广告和隐私以后改宿主文件。\n');
     try {
         value.game.packageName = await askValue(rl, 'Android packageName', {
             validate: (answer) => /^[a-zA-Z][\w]*(\.[a-zA-Z][\w]*)+$/.test(answer) ? null : '不是有效的 Android 包名。',
         });
+        if (isMissingConfigValue(value.cocos.startScene)) {
+            value.cocos.startScene = await askStartScene(rl, project);
+        } else {
+            const detected = detectStartScene(project);
+            console.log(`启动场景已识别：${value.cocos.startScene}${detected?.reason ? `（${detected.reason}）` : ''}`);
+        }
         return value;
     } finally {
         rl.close();
@@ -579,12 +700,12 @@ async function initConfig(project, options) {
     mkdirSync(dirname(output), { recursive: true });
     writeFileSync(output, serializeConfig(output, configuredValue), 'utf8');
     rememberProject(project);
-    console.log(`已生成待填写配置：${output}`);
-    if (!interactive) console.log('其中 REQUIRED、空数组和 null 都必须由项目负责人确认后填写；CLI 没有猜测这些参数。');
+    console.log(`已生成配置：${output}`);
+    if (!interactive) console.log('包名仍是 REQUIRED，请填写后使用。其余字段已用识别结果或默认值。');
     else {
-        const executable = resolve(process.argv[1]);
-        console.log('初始化完成。其他游戏专属参数以后再补。下一步运行：');
-        console.log(`node ${executable} status --project ${project}`);
+        console.log('初始化完成。下一步：');
+        console.log('glory-game apply');
+        console.log('glory-game cocos-build');
     }
 }
 
@@ -636,6 +757,45 @@ function resolveAndroidSdk(project, config, generatedProject) {
         localSdk,
         join(homedir(), 'Library', 'Android', 'sdk'),
     ]);
+}
+
+function javaMajorOf(version) {
+    if (!version) return null;
+    return version.startsWith('1.') ? Number(version.split('.')[1]) : Number(version.split('.')[0]);
+}
+
+function sdkComponentPath(androidSdk, folder, version) {
+    if (!androidSdk || !version) return null;
+    return join(androidSdk, folder, String(version));
+}
+
+function assertRequiredToolchain(inspection, config, commandLabel) {
+    const fails = [];
+    if (!inspection.creator.path) {
+        fails.push(`未找到 Cocos Creator ${config.cocos.version}，请安装到 /Applications/Cocos/Creator/${config.cocos.version}/`);
+    }
+    const javaMajor = javaMajorOf(inspection.java.version);
+    if (!inspection.java.path || javaMajor !== inspection.java.requiredMajor) {
+        fails.push(`需要 JDK ${inspection.java.requiredMajor}，当前是 ${inspection.java.version || '未安装'}。macOS 可执行：/usr/libexec/java_home -v ${inspection.java.requiredMajor}`);
+    }
+    if (!inspection.androidSdk) {
+        fails.push('未找到 Android SDK。设置 ANDROID_SDK_ROOT，或安装到 ~/Library/Android/sdk');
+    }
+    const required = [
+        ['platforms', config.android?.compileSdk ? `android-${config.android.compileSdk}` : null, `compileSdk ${config.android?.compileSdk}`],
+        ['build-tools', config.android?.buildToolsVersion, `Build Tools ${config.android?.buildToolsVersion}`],
+        ['ndk', config.android?.ndkVersion, `NDK ${config.android?.ndkVersion}`],
+        ['cmake', config.android?.cmakeVersion, `CMake ${config.android?.cmakeVersion}`],
+    ];
+    for (const [folder, version, label] of required) {
+        const target = sdkComponentPath(inspection.androidSdk, folder, version);
+        if (target && !existsSync(target)) {
+            fails.push(`需要 ${label}，请用 SDK Manager 安装到：${target}`);
+        }
+    }
+    if (fails.length) {
+        throw new CliError(`${commandLabel} 本机工具链必须和 glory-game.yaml 一致，缺一不可：\n- ${fails.join('\n- ')}`);
+    }
 }
 
 function addCheck(checks, id, status, message, details = {}) {
@@ -958,7 +1118,7 @@ function orientationValue(value) {
     };
 }
 
-function createCocosBuildConfig(project, config, mode, outputName) {
+function createCocosBuildConfig(project, config, mode, outputName, toolchain = {}) {
     const profile = loadAndroidProfile(project);
     const androidOptions = {
         ...profile.options,
@@ -974,6 +1134,9 @@ function createCocosBuildConfig(project, config, mode, outputName) {
         renderBackEnd: config.cocos.renderBackEnd || profile.options.renderBackEnd || { vulkan: false, gles3: true, gles2: true },
         __version__: profile.options.__version__ || '1.0.1',
     };
+    if (toolchain.sdkPath) androidOptions.sdkPath = toolchain.sdkPath;
+    if (toolchain.ndkPath) androidOptions.ndkPath = toolchain.ndkPath;
+    if (toolchain.javaHome) androidOptions.javaHome = toolchain.javaHome;
     const buildRoot = resolve(project, config.cocos.buildRoot || 'build');
     const buildConfig = {
         taskName: 'android',
@@ -986,9 +1149,9 @@ function createCocosBuildConfig(project, config, mode, outputName) {
         mainBundleCompressionType: profile.common.mainBundleCompressionType || 'merge_dep',
         packages: { android: androidOptions },
     };
-    const startScene = config.cocos.startScene || profile.common.startScene;
-    if (startScene) buildConfig.startScene = startScene;
-    return { buildConfig, buildRoot, outputPath: join(buildRoot, outputName) };
+    const startScene = resolveBuildStartScene(project, config);
+    buildConfig.startScene = startScene.uuid;
+    return { buildConfig, buildRoot, outputPath: join(buildRoot, outputName), startScene };
 }
 
 function runProcess(command, args, options = {}) {
@@ -1396,6 +1559,9 @@ function transformProguardRules(content) {
 }
 
 function createMyApplication(config) {
+    const providerAppId = escapeJava(config.sdk?.providerAppId || '');
+    const skipPrivacyBeforeTime = escapeJava(config.privacy?.skipBeforeTime || '');
+    const policyUrl = escapeJava(config.privacy?.policyUrl || '');
     return `// glory-game-managed:v1
 package com.cocos.game;
 
@@ -1408,6 +1574,20 @@ import ${config.game.packageName}.BuildConfig;
 import com.glory.adsdk.AdSdk;
 import com.glory.adsdk.AdSdkConfig;
 
+/*
+ * 新游戏接入参数修改位置：
+ * 1. OPPO GameCenter app_key：
+ *    app/AndroidManifest.xml 中 android:name="app_key" 的 meta-data。
+ * 2. 广告 Provider App ID：
+ *    本文件中的 config.adProviderAppId。
+ * 3. OPPO Supplier App ID：
+ *    app/assets/supplierconfig.json 中 supplier.oppo.appid。
+ * 4. 隐私协议地址和跳过时间：
+ *    本文件中的 privacyConfig.privacyPolicyUrl 和 config.skipPrivacyBeforeTime。
+ * 5. GameCenter Secret：
+ *    环境变量 GLORY_GAME_CENTER_APP_SECRET，由 app/build.gradle 写入 BuildConfig，
+ *    不要把 Secret 明文提交到本文件。
+ */
 public class MyApplication extends MultiDexApplication {
 
     @Override
@@ -1417,14 +1597,14 @@ public class MyApplication extends MultiDexApplication {
         AdSdkConfig config = new AdSdkConfig();
         config.appKey = BuildConfig.APPLICATION_ID;
         config.versionName = BuildConfig.VERSION_NAME;
-        config.adProviderAppId = "${escapeJava(config.sdk.providerAppId)}";
+        config.adProviderAppId = "${providerAppId}";
         config.mainGameActivityClass = AppActivity.class;
         config.debug = BuildConfig.DEBUG;
         config.gameCenterAppSecret = BuildConfig.GLORY_GAME_CENTER_APP_SECRET;
-        config.skipPrivacyBeforeTime = "${escapeJava(config.privacy.skipBeforeTime)}";
+        config.skipPrivacyBeforeTime = "${skipPrivacyBeforeTime}";
 
         AdSdkConfig.PrivacyConfig privacyConfig = new AdSdkConfig.PrivacyConfig();
-        privacyConfig.privacyPolicyUrl = "${escapeJava(config.privacy.policyUrl)}";
+        privacyConfig.privacyPolicyUrl = "${policyUrl}";
         config.privacyConfig = privacyConfig;
         AdSdk.init(this, config);
     }
@@ -1718,11 +1898,45 @@ function selfTest(project, config) {
     }
 }
 
-function applyGloryConfigToGeneratedProject(gradleProject, config) {
+function xmlAttr(value) {
+    return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+}
+
+function writeAndroidStudioVcsMappings(gradleProject, projectRoot, config) {
+    const ideaDir = join(gradleProject, '.idea');
+    mkdirSync(ideaDir, { recursive: true });
+    const sdkRel = config.sdk?.submodulePath || 'native/engine/android/glory-adsdk';
+    const sdkPath = join(projectRoot, sdkRel);
+    const mappings = [
+        '    <mapping directory="" vcs="Git" />',
+        `    <mapping directory="${xmlAttr(projectRoot)}" vcs="Git" />`,
+    ];
+    if (existsSync(sdkPath)) {
+        mappings.push(`    <mapping directory="${xmlAttr(sdkPath)}" vcs="Git" />`);
+    }
+    writeFileSync(
+        join(ideaDir, 'vcs.xml'),
+        `<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+${mappings.join('\n')}
+  </component>
+</project>
+`,
+        'utf8',
+    );
+}
+
+function applyGloryConfigToGeneratedProject(gradleProject, config, projectRoot, javaHome) {
     const settings = join(gradleProject, 'settings.gradle');
     const rootBuild = join(gradleProject, 'build.gradle');
     const wrapper = join(gradleProject, 'gradle', 'wrapper', 'gradle-wrapper.properties');
-    if (!existsSync(settings) || !existsSync(rootBuild) || !existsSync(wrapper)) {
+    const properties = join(gradleProject, 'gradle.properties');
+    if (!existsSync(settings) || !existsSync(rootBuild) || !existsSync(wrapper) || !existsSync(properties)) {
         throw new CliError(`生成工程缺少 Gradle 文件：${gradleProject}`);
     }
     writeFileSync(settings, "apply from: new File(NATIVE_DIR, 'cocos-settings.gradle')\n", 'utf8');
@@ -1736,7 +1950,22 @@ function applyGloryConfigToGeneratedProject(gradleProject, config) {
         replaceRequired(readText(wrapper), /gradle-[0-9][^-]*-(?:bin|all)\.zip/, `gradle-${config.android.gradleVersion}-all.zip`, 'Gradle Wrapper 版本'),
         'utf8',
     );
-    console.log(`已写入 glory-adsdk 模块，并固定 AGP ${config.android.agpVersion} / Gradle ${config.android.gradleVersion}`);
+    let nextProperties = readText(properties);
+    nextProperties = setGradleProperty(nextProperties, 'android.useAndroidX', 'true');
+    nextProperties = setGradleProperty(nextProperties, 'android.enableJetifier', 'true');
+    if (config.android?.compileSdk) nextProperties = setGradleProperty(nextProperties, 'PROP_COMPILE_SDK_VERSION', config.android.compileSdk);
+    if (config.android?.targetSdk) nextProperties = setGradleProperty(nextProperties, 'PROP_TARGET_SDK_VERSION', config.android.targetSdk);
+    if (config.android?.buildToolsVersion) nextProperties = setGradleProperty(nextProperties, 'PROP_BUILD_TOOLS_VERSION', config.android.buildToolsVersion);
+    const androidSdk = resolveAndroidSdk(projectRoot, config, gradleProject);
+    const requiredNdk = sdkComponentPath(androidSdk, 'ndk', config.android?.ndkVersion);
+    if (!requiredNdk || !existsSync(requiredNdk)) {
+        throw new CliError(`未找到 Android NDK ${config.android?.ndkVersion}。请用 SDK Manager 安装到：${requiredNdk || '(未找到 Android SDK)'}`);
+    }
+    nextProperties = setGradleProperty(nextProperties, 'PROP_NDK_PATH', requiredNdk);
+    if (javaHome) nextProperties = setGradleProperty(nextProperties, 'org.gradle.java.home', javaHome);
+    writeFileSync(properties, nextProperties, 'utf8');
+    if (projectRoot) writeAndroidStudioVcsMappings(gradleProject, projectRoot, config);
+    console.log(`已写入 glory-adsdk 模块，并固定 AGP ${config.android.agpVersion} / Gradle ${config.android.gradleVersion} / JDK ${config.android.javaVersion} / NDK ${config.android.ndkVersion} / Jetifier`);
 }
 
 function normalizeGeneratedGradle(project, gradleProject, config, javaHome, dryRun) {
@@ -1786,6 +2015,8 @@ function normalizeGeneratedGradle(project, gradleProject, config, javaHome, dryR
         throw new CliError(`未找到配置要求的 Android NDK ${config.android.ndkVersion}`);
     }
     let propertiesAfter = setGradleProperty(propertiesBefore, 'org.gradle.java.home', javaHome);
+    propertiesAfter = setGradleProperty(propertiesAfter, 'android.useAndroidX', 'true');
+    propertiesAfter = setGradleProperty(propertiesAfter, 'android.enableJetifier', 'true');
     propertiesAfter = setGradleProperty(propertiesAfter, 'PROP_COMPILE_SDK_VERSION', config.android.compileSdk);
     propertiesAfter = setGradleProperty(propertiesAfter, 'PROP_TARGET_SDK_VERSION', config.android.targetSdk);
     propertiesAfter = setGradleProperty(propertiesAfter, 'PROP_BUILD_TOOLS_VERSION', config.android.buildToolsVersion);
@@ -1799,16 +2030,22 @@ function normalizeGeneratedGradle(project, gradleProject, config, javaHome, dryR
 }
 
 async function cocosBuild(project, config, options) {
+    applyCocosPortability(project, Boolean(options['dry-run']));
     await ensureProjectDependencies(project, Boolean(options['dry-run']));
     const inspection = inspectProject(project, config);
-    if (!inspection.creator.path) throw new CliError(`未找到 Cocos Creator ${config.cocos.version}`);
+    assertRequiredToolchain(inspection, config, 'cocos-build');
     const mode = String(options.mode || 'debug');
     if (!['debug', 'release'].includes(mode)) throw new CliError('--mode 只能是 debug 或 release');
     const outputName = String(options['output-name'] || `android-${timestamp()}`);
     if (outputName.includes('/') || outputName.includes('\\') || outputName === '.' || outputName === '..') {
         throw new CliError('--output-name 只能是单个目录名称');
     }
-    const { buildConfig, buildRoot, outputPath } = createCocosBuildConfig(project, config, mode, outputName);
+    const toolchain = {
+        sdkPath: inspection.androidSdk,
+        ndkPath: sdkComponentPath(inspection.androidSdk, 'ndk', config.android?.ndkVersion),
+        javaHome: inspection.java.path,
+    };
+    const { buildConfig, buildRoot, outputPath, startScene } = createCocosBuildConfig(project, config, mode, outputName, toolchain);
     const stateRoot = join(project, 'build', 'glory-cli');
     const configPath = join(stateRoot, 'configs', `${outputName}.json`);
     const logPath = join(stateRoot, 'logs', `${outputName}.log`);
@@ -1818,8 +2055,15 @@ async function cocosBuild(project, config, options) {
         '--build', `configPath=${configPath};stage=build;logDest=${logPath}`,
     ];
     console.log(`Creator：${inspection.creator.path}`);
+    console.log(`JDK：${inspection.java.version}（${inspection.java.path}）`);
+    console.log(`Android SDK：${inspection.androidSdk}`);
+    console.log(`NDK：${config.android.ndkVersion}（${toolchain.ndkPath}）`);
     console.log(`模式：${mode}`);
     console.log(`输出：${outputPath}`);
+    console.log(`启动场景：${startScene.path}（${startScene.reason}）`);
+    if (startScene.reason !== 'glory-game.yaml') {
+        console.warn('启动场景未写入 glory-game.yaml。对方电脑没有本机 Cocos profiles，请把这个路径提交进配置。');
+    }
     console.log(`配置：${configPath}`);
     console.log(`控制台日志：${transcriptPath}`);
     console.log(`命令：${inspection.creator.path} ${args.map((arg) => JSON.stringify(arg)).join(' ')}\n`);
@@ -1861,7 +2105,7 @@ async function cocosBuild(project, config, options) {
     if (missing.length) throw new CliError(`Creator 已退出，但缺少 ${missing.length} 个必要产物。日志：${logPath}`);
     console.log(`\nCocos Android 工程生成成功：${outputPath}`);
 
-    applyGloryConfigToGeneratedProject(join(outputPath, 'proj'), config);
+    applyGloryConfigToGeneratedProject(join(outputPath, 'proj'), config, project, inspection.java.path);
 
     const imager = join(project, 'settings', 'v2', 'packages', 'imager.json');
     if (existsSync(imager)) {
@@ -1883,6 +2127,7 @@ async function cocosBuild(project, config, options) {
 
 async function androidBuild(project, config, options) {
     const inspection = inspectProject(project, config);
+    assertRequiredToolchain(inspection, config, 'android-build');
     const mode = String(options.mode || 'debug');
     if (!['debug', 'release'].includes(mode)) throw new CliError('--mode 只能是 debug 或 release');
     const signing = releaseSigning(project, config, mode, Boolean(options['dry-run']));
@@ -1891,12 +2136,6 @@ async function androidBuild(project, config, options) {
     const gradleProject = existsSync(join(input, 'proj', 'gradlew')) ? join(input, 'proj') : input;
     const gradlew = join(gradleProject, 'gradlew');
     if (!existsSync(gradlew)) throw new CliError(`缺少 Gradle Wrapper：${gradlew}`);
-    const javaMajor = inspection.java.version?.startsWith('1.')
-        ? Number(inspection.java.version.split('.')[1])
-        : Number(inspection.java.version?.split('.')[0]);
-    if (!inspection.java.path || javaMajor !== inspection.java.requiredMajor) {
-        throw new CliError(`未找到可用的 JDK ${inspection.java.requiredMajor}`);
-    }
     const secretEnv = config.sdk?.gameCenterAppSecretEnv;
     const managedApplication = readText(join(project, 'native', 'engine', 'android', 'app', 'src', 'com', 'cocos', 'game', 'MyApplication.java'))
         .includes('BuildConfig.GLORY_GAME_CENTER_APP_SECRET');
@@ -2049,8 +2288,16 @@ async function main() {
     }
     if (command === 'apply') {
         const loadedConfig = loadConfig(project, options, true).value;
-        const config = options.scaffold ? createScaffoldConfig(project, loadedConfig) : loadedConfig;
-        if (options.scaffold) console.warn('! 临时接入模式：未填写参数使用 PENDING_CONFIGURATION，产物不能发布。');
+        const config = createScaffoldConfig(project, loadedConfig);
+        if ([
+            loadedConfig.sdk?.gameCenterAppKey,
+            loadedConfig.sdk?.providerAppId,
+            loadedConfig.sdk?.supplierAppId,
+            loadedConfig.privacy?.policyUrl,
+            loadedConfig.privacy?.skipBeforeTime,
+        ].some(isMissingConfigValue)) {
+            console.warn('广告、隐私参数未填，宿主先留空。以后改 MyApplication、Manifest 的 app_key、supplierconfig.json。');
+        }
         applyIntegration(project, config, options);
         return;
     }

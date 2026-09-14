@@ -1,3 +1,4 @@
+# glory-game CLI 共用构建参数。广告、隐私、密钥只改宿主文件，不要写进本文件。
 schemaVersion: 1
 profile: glory-oppo-cocos-3.8-v1
 game:
@@ -9,6 +10,7 @@ game:
   offlineGame: false
 cocos:
   version: 3.8.6
+  startScene: assets/scene/Main.scene
   apiLevel: 29
   appABIs:
     - arm64-v8a
@@ -24,20 +26,8 @@ android:
   buildToolsVersion: 30.0.3
   ndkVersion: 21.4.7075529
   cmakeVersion: 3.22.1
-  signing:
-    storeFile: REQUIRED_FOR_RELEASE
-    storePasswordEnv: GLORY_RELEASE_STORE_PASSWORD
-    keyAlias: REQUIRED_FOR_RELEASE
-    keyPasswordEnv: GLORY_RELEASE_KEY_PASSWORD
-    certificateSha256: ""
 sdk:
   submodulePath: native/engine/android/glory-adsdk
   submoduleUrl: git@github.com:superWalnuts/OppoGameApkAdSdk.git
   commit: ccaef3e1ef6821928c850bd1858acafa7ab975f5
-  gameCenterAppKey: REQUIRED
-  providerAppId: REQUIRED
-  supplierAppId: REQUIRED
   gameCenterAppSecretEnv: GLORY_GAME_CENTER_APP_SECRET
-privacy:
-  policyUrl: REQUIRED
-  skipBeforeTime: REQUIRED

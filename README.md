@@ -1,6 +1,8 @@
 # glory-game CLI
 
-独立的 Cocos Android 主库接入 CLI。当前版本为 `0.4.0`。
+独立的 Cocos Android 主库接入 CLI。当前版本为 `0.5.0`。
+
+按真实项目走一遍的步骤和踩坑，见 [接入水果配](doc/接入水果配.md)。日常不要用 `integrate`。
 
 ## 当前能力
 
@@ -67,26 +69,17 @@ glory-game status --project /path/to/game-or-repository
 
 ## 接入流程
 
-先预演：
+日常三条：
 
 ```bash
-glory-game integrate \
-  --project /path/to/game-or-repository \
-  --config /absolute/path/to/glory-game.config.json \
-  --mode debug \
-  --dry-run
+glory-game init-config
+glory-game apply
+glory-game cocos-build
 ```
 
-确认计划后执行：
+`init-config` 只问包名，并把启动场景写入 `glory-game.yaml`。`cocos-build` 开跑前会按 yaml 检查 JDK 11、NDK `21.4.7075529`、CMake、platform，缺了或版本不对就停。生成后打开最新 `build/android-*/proj`，不要打开 `native/engine/android`。
 
-```bash
-export GLORY_GAME_CENTER_APP_SECRET='<游戏中心密钥>'
-
-glory-game integrate \
-  --project /path/to/game-or-repository \
-  --config /absolute/path/to/glory-game.config.json \
-  --mode debug
-```
+`integrate` 会串联 Gradle 编 APK，日常不要用。完整步骤和水果配踩坑见 [接入水果配](doc/接入水果配.md)。
 
 如果 `native/engine/android` 已经生成，也可以只应用 SDK 宿主改造：
 
