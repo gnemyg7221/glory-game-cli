@@ -3,6 +3,7 @@ schemaVersion: 1
 profile: glory-oppo-cocos-3.8-v1
 game:
   name: ExampleGame
+  icon: assets/icon/ic_launcher.png
   packageName: com.example.game.nearme.gamecenter
   versionCode: 1
   versionName: 1.0.0

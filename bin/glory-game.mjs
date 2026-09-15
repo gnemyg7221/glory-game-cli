@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -94,7 +94,7 @@ function usage() {
   macOS、Cocos Creator 3.8.x、Android，以及已识别项目结构的 glory-adsdk 接入。
 
 快速接入：
-  init-config 问包名；启动场景写入 glory-game.yaml。对方电脑不需要本机 Cocos profiles。
+  init-config 问包名；启动场景写入 glory-game.yaml。对方电脑不需要本机 Cocos profiles。桌面名和图标以后改 yaml 的 game.name / game.icon，不参与初始化。
   integrate --scaffold 可在暂不填写 SDK 后台/隐私参数时完成 SDK、Cocos 和 Android Debug 编译。
   该模式生成的 APK 仅用于验证接入和编译，不能发布；以后填写真实参数后重新 integrate 即可。
 
@@ -240,6 +240,9 @@ function validateConfig(config) {
     }
     if (!isMissingConfigValue(config.cocos?.startScene) && typeof config.cocos.startScene !== 'string') {
         errors.push('cocos.startScene 必须是场景路径字符串，例如 assets/scene/Main.scene');
+    }
+    if (!isMissingConfigValue(config.game?.icon) && (typeof config.game.icon !== 'string' || !/\.png$/i.test(config.game.icon))) {
+        errors.push('game.icon 必须是相对工程根目录的 PNG 路径');
     }
     if (errors.length) throw new CliError(`配置无效：\n- ${errors.join('\n- ')}`);
 }
@@ -667,7 +670,7 @@ async function interactiveConfig(project) {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     console.log(`检测到 Cocos 工程：${project}`);
     console.log(`已复用配置：${value.profile}（Cocos/Java/Gradle/NDK/ABI/SDK 版本）`);
-    console.log('初始化只问包名。启动场景、方向、NDK、AGP、SDK 地址都用识别结果或默认值。广告和隐私以后改宿主文件。\n');
+    console.log('初始化只问包名。启动场景、方向、NDK、AGP、SDK 地址都用识别结果或默认值。广告和隐私以后改宿主文件。桌面名和图标以后改 yaml，不在这里问。\n');
     try {
         value.game.packageName = await askValue(rl, 'Android packageName', {
             validate: (answer) => /^[a-zA-Z][\w]*(\.[a-zA-Z][\w]*)+$/.test(answer) ? null : '不是有效的 Android 包名。',
@@ -1619,8 +1622,47 @@ public class MyApplication extends MultiDexApplication {
 `;
 }
 
+function gradleProjectName(config) {
+    const explicit = config.android?.projectName;
+    if (explicit && /^[_a-zA-Z][_a-zA-Z0-9-]*$/.test(explicit)) return explicit;
+    const last = String(config.game?.packageName || '').split('.').filter(Boolean).at(-1);
+    if (last && /^[_a-zA-Z][_a-zA-Z0-9-]*$/.test(last)) return last;
+    return 'CocosGame';
+}
+
+const LAUNCHER_MIPMAPS = ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi'];
+
+function resolveGameIconPath(project, config) {
+    const raw = config.game?.icon;
+    if (isMissingConfigValue(raw)) return null;
+    const iconPath = isAbsolute(raw) ? raw : resolve(project, raw);
+    if (!existsSync(iconPath) || !statSync(iconPath).isFile()) {
+        throw new CliError(`找不到桌面图标：${iconPath}`);
+    }
+    if (!/\.png$/i.test(iconPath)) throw new CliError(`桌面图标必须是 PNG：${iconPath}`);
+    return iconPath;
+}
+
+function applyGameIcon(project, config, extraResRoots = [], dryRun = false) {
+    const source = resolveGameIconPath(project, config);
+    if (!source) return [];
+    const roots = [join(project, 'native', 'engine', 'android', 'res'), ...extraResRoots.filter(Boolean)];
+    const written = [];
+    for (const root of roots) {
+        for (const density of LAUNCHER_MIPMAPS) {
+            const dest = join(root, density, 'ic_launcher.png');
+            written.push(dest);
+            if (!dryRun) {
+                mkdirSync(dirname(dest), { recursive: true });
+                copyFileSync(source, dest);
+            }
+        }
+    }
+    return written;
+}
+
 function createCocosSettings(config) {
-    const name = escapeGroovySingle(config.android?.projectName || config.game.name);
+    const name = escapeGroovySingle(gradleProjectName(config));
     return `// glory-game-managed:v1
 include ':libcocos', ':libservice', ':app', ':glory-adsdk'
 project(':libcocos').projectDir = new File(COCOS_ENGINE_PATH, 'cocos/platform/android/libcocos2dx')
@@ -2062,6 +2104,8 @@ async function cocosBuild(project, config, options) {
     console.log(`模式：${mode}`);
     console.log(`输出：${outputPath}`);
     console.log(`启动场景：${startScene.path}（${startScene.reason}）`);
+    console.log(`桌面名称：${config.game.name}`);
+    if (!isMissingConfigValue(config.game?.icon)) console.log(`桌面图标：${config.game.icon}`);
     if (startScene.reason !== 'glory-game.yaml') {
         console.warn('启动场景未写入 glory-game.yaml。对方电脑没有本机 Cocos profiles，请把这个路径提交进配置。');
     }
@@ -2070,6 +2114,11 @@ async function cocosBuild(project, config, options) {
     console.log(`命令：${inspection.creator.path} ${args.map((arg) => JSON.stringify(arg)).join(' ')}\n`);
     if (options['dry-run']) {
         console.log(JSON.stringify(buildConfig, null, 2));
+        const plannedIcons = applyGameIcon(project, config, [join(outputPath, 'proj', 'res')], true);
+        if (plannedIcons.length) {
+            console.log('将写入桌面图标：');
+            for (const path of plannedIcons) console.log(`  ${path}`);
+        }
         console.log('\nDRY RUN：未创建配置、未启动 Creator、未修改工程。');
         return { outputPath, buildConfig, dryRun: true };
     }
@@ -2107,6 +2156,8 @@ async function cocosBuild(project, config, options) {
     console.log(`\nCocos Android 工程生成成功：${outputPath}`);
 
     applyGloryConfigToGeneratedProject(join(outputPath, 'proj'), config, project, inspection.java.path);
+    const iconFiles = applyGameIcon(project, config, [join(outputPath, 'proj', 'res')]);
+    if (iconFiles.length) console.log(`已写入桌面图标：${config.game.icon} → mipmap ic_launcher.png`);
 
     const imager = join(project, 'settings', 'v2', 'packages', 'imager.json');
     if (existsSync(imager)) {

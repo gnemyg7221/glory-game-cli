@@ -14,6 +14,18 @@ glory-game version
 
 ---
 
+## 0.7.0 - 2026-09-15
+
+### 新增
+
+- `game.name` 作为桌面显示名，`game.icon` 指向一张本地 PNG。都不参与 `init-config`，手改 yaml 即可。
+- `cocos-build` 把名字传给 Creator，并把图标拷到 `native/engine/android/res/mipmap-*/ic_launcher.png` 和生成工程。
+- Gradle 模块名用 ASCII（`android.projectName` 或包名最后一段），不跟中文显示名绑在一起。
+
+### 变更
+
+- 改名字或图标后跑 `cocos-build`，不用 `apply`。
+
 ## 0.6.0 - 2026-09-15
 
 ### 新增
