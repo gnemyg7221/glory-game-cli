@@ -2,7 +2,7 @@
 
 独立的 Cocos Android 主库接入 CLI。当前版本为 `0.5.0`。
 
-按真实项目走一遍的步骤和踩坑，见 [接入水果配](doc/接入水果配.md)。日常不要用 `integrate`。
+按真实项目走一遍的步骤和踩坑，见 [接入水果配](doc/glory-game%20CLI%20接入（以水果配为例）/glory-game%20CLI%20接入（以水果配为例）.md)。给已接好 SDK 的人出工程，见 [cli 接入新工程开发指南](doc/%5B202609%5Dcli%20接入新工程开发指南/%5B202609%5Dcli%20接入新工程开发指南.md)。日常不要用 `integrate`。
 
 ## 当前能力
 
@@ -69,17 +69,18 @@ glory-game status --project /path/to/game-or-repository
 
 ## 接入流程
 
-日常三条：
+没有 `native/engine/android` 时是两次 `cocos-build`：
 
 ```bash
 glory-game init-config
+glory-game cocos-build    # 生成 Android 模板
 glory-game apply
-glory-game cocos-build
+glory-game cocos-build    # 生成带 SDK 的 proj，Studio 打开这一份
 ```
 
-`init-config` 只问包名，并把启动场景写入 `glory-game.yaml`。`cocos-build` 开跑前会按 yaml 检查 JDK 11、NDK `21.4.7075529`、CMake、platform，缺了或版本不对就停。生成后打开最新 `build/android-*/proj`，不要打开 `native/engine/android`。
+已有模板可跳过第一次 `cocos-build`。打开最新 `build/android-*/proj`，不要打开 `native/engine/android`。`integrate` 会编 Gradle，日常不用。
 
-`integrate` 会串联 Gradle 编 APK，日常不要用。完整步骤和水果配踩坑见 [接入水果配](doc/接入水果配.md)。
+步骤和接入踩坑见 [接入水果配](doc/glory-game%20CLI%20接入（以水果配为例）/glory-game%20CLI%20接入（以水果配为例）.md)。游戏闪退、过关动画不在该文档的主流程里。
 
 如果 `native/engine/android` 已经生成，也可以只应用 SDK 宿主改造：
 
