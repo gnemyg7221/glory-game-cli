@@ -1,6 +1,6 @@
 # glory-game CLI
 
-独立的 Cocos Android 主库接入 CLI。当前版本为 `0.5.0`。
+独立的 Cocos Android 主库接入 CLI。当前版本为 `0.6.0`，变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 按真实项目走一遍的步骤和踩坑，见 [接入水果配](doc/glory-game%20CLI%20接入（以水果配为例）/glory-game%20CLI%20接入（以水果配为例）.md)。给已接好 SDK 的人出工程，见 [cli 接入新工程开发指南](doc/%5B202609%5Dcli%20接入新工程开发指南/%5B202609%5Dcli%20接入新工程开发指南.md)。日常不要用 `integrate`。
 
@@ -46,6 +46,16 @@ node bin/glory-game.mjs inspect \
 npm link
 glory-game inspect --project /path/to/game-or-repository
 ```
+
+已经 link 过的，拉最新分支后在本目录更新：
+
+```bash
+git pull
+npm install
+glory-game version
+```
+
+一般不用再 `npm link`。`package.json` 的依赖或 `bin` 变了才需要再 link 一次。打印出来的号应和 `package.json` 一致。
 
 CLI 没有第三方运行时依赖，要求 Node.js 18 或更高版本。
 

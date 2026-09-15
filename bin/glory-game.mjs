@@ -4,10 +4,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import YAML from 'yaml';
 
-const CLI_VERSION = '0.5.0';
+const CLI_VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')).version;
 const DEFAULT_CONFIG = 'glory-game.yaml';
 const CONFIG_CANDIDATES = ['glory-game.yaml', 'glory-game.yml', 'glory-game.config.json'];
 const STATE_FILE = join(homedir(), '.config', 'glory-game', 'state.json');
