@@ -763,17 +763,19 @@ function parseLocalProperties(path) {
     return values;
 }
 
-function findGeneratedProject(project) {
+function listGeneratedProjects(project) {
     const buildRoot = join(project, 'build');
-    if (!existsSync(buildRoot)) return null;
+    if (!existsSync(buildRoot)) return [];
     const matches = [];
     for (const name of readdirSync(buildRoot)) {
         const candidate = join(buildRoot, name, 'proj');
-        if (existsSync(join(candidate, 'gradlew'))) {
-            matches.push({ path: candidate, mtime: statSync(candidate).mtimeMs });
-        }
+        if (existsSync(join(candidate, 'gradlew'))) matches.push({ path: candidate, name });
     }
-    return matches.sort((a, b) => b.mtime - a.mtime)[0]?.path || null;
+    return matches.sort((a, b) => b.name.localeCompare(a.name)).map((item) => item.path);
+}
+
+function findGeneratedProject(project) {
+    return listGeneratedProjects(project)[0] || null;
 }
 
 function resolveAndroidSdk(project, config, generatedProject) {
@@ -1727,11 +1729,10 @@ function applyHostCredentials(project, config, dryRun = false) {
     }
 
     if (!isMissingConfigValue(appSecret)) {
-        const proj = findGeneratedProject(project);
         const propertyFiles = [
             join(nativeRoot, 'app', 'gradle.properties'),
-            proj ? join(proj, 'gradle.properties') : null,
-        ].filter(Boolean);
+            ...listGeneratedProjects(project).map((proj) => join(proj, 'gradle.properties')),
+        ];
         for (const properties of propertyFiles) {
             const before = existsSync(properties) ? readText(properties) : '';
             const after = setGradleProperty(before || '\n', 'GLORY_GAME_CENTER_APP_SECRET', appSecret);
@@ -1780,8 +1781,7 @@ function applyAppName(project, config, dryRun = false) {
     if (removeAppNameResource(nativeStrings, dryRun)) {
         changes.push({ path: nativeStrings, description: '去掉 native 里重复的 app_name' });
     }
-    const proj = findGeneratedProject(project);
-    if (proj) {
+    for (const proj of listGeneratedProjects(project)) {
         const projStrings = join(proj, 'res', 'values', 'strings.xml');
         if (upsertAppNameResource(projStrings, appName, dryRun)) {
             changes.push({ path: projStrings, description: `桌面名 → ${appName}` });
@@ -2543,7 +2543,11 @@ async function main() {
         const dryRun = Boolean(options['dry-run']);
         printYamlHostChanges(syncYamlHost(project, config, dryRun), dryRun);
         if (dryRun) console.log('\nDRY RUN：未修改工程。');
-        else console.log('Android Studio 对当前打开的工程 Rebuild 即可，不用再跑 Creator。');
+        else {
+            const latest = findGeneratedProject(project);
+            if (latest) console.log(`最新工程：${latest}`);
+            console.log('Android Studio 打开最新 android-*/proj 再 Rebuild。只 Rebuild 旧目录不会换成 yaml 里的名字。');
+        }
         return;
     }
     if (command === 'cocos-build') {
