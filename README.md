@@ -1,6 +1,6 @@
 # glory-game CLI
 
-独立的 Cocos Android 主库接入 CLI。当前版本为 `0.7.0`，变更见 [CHANGELOG.md](CHANGELOG.md)。
+独立的 Cocos Android 主库接入 CLI。当前版本为 `0.8.0`，变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 按真实项目走一遍的步骤和踩坑，见 [接入水果配](doc/glory-game%20CLI%20接入（以水果配为例）/glory-game%20CLI%20接入（以水果配为例）.md)。给已接好 SDK 的人出工程，见 [cli 接入新工程开发指南](doc/%5B202609%5Dcli%20接入新工程开发指南/%5B202609%5Dcli%20接入新工程开发指南.md)。日常不要用 `integrate`。
 
@@ -69,7 +69,7 @@ glory-game init-config --project /path/to/game-or-repository
 
 终端交互只询问 `Android packageName`。游戏名和 Creator 版本从工程读取；AGP、Gradle、JDK、API、ABI、Build Tools、NDK、CMake、SDK 地址及 SDK commit 使用已验证共用配置。其他游戏专属参数保持 `REQUIRED` 或 `null`，可以以后分批补。也可以用 `--stdout` 只输出、不写文件。
 
-桌面显示名和图标不参与初始化。以后在 `glory-game.yaml` 里改 `game.name`、`game.icon`，再跑 `cocos-build`，不用 `apply`。打开最新 `build/android-*/proj`。
+`game:` 里只填一次：`name`、`icon`、`appKey`、`appId`、`appSecret`。然后 `glory-game sync`。同一个 `appId` 会写进 MyApplication 和 supplierconfig；`appKey` 进 Manifest；`appSecret` 进 gradle.properties，MyApplication 从 BuildConfig 读。空着不覆盖宿主。打开最新 `build/android-*/proj`。
 
 随时查看还缺哪些游戏专属参数：
 
@@ -91,6 +91,13 @@ glory-game cocos-build    # 生成带 SDK 的 proj，Studio 打开这一份
 ```
 
 已有模板可跳过第一次 `cocos-build`。打开最新 `build/android-*/proj`，不要打开 `native/engine/android`。`integrate` 会编 Gradle，日常不用。
+
+只改桌面名、图标、appKey、appId、appSecret 时：
+
+```bash
+glory-game sync --dry-run
+glory-game sync
+```
 
 步骤和接入踩坑见 [接入水果配](doc/glory-game%20CLI%20接入（以水果配为例）/glory-game%20CLI%20接入（以水果配为例）.md)。游戏闪退、过关动画不在该文档的主流程里。
 

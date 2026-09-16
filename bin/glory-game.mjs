@@ -37,6 +37,7 @@ const VERIFIED_COCOS_38_PROFILE = {
         gameCenterAppSecretEnv: 'GLORY_GAME_CENTER_APP_SECRET',
     },
 };
+const DEFAULT_GAME_ICON = 'assets/icon/ic_launcher.png';
 
 class CliError extends Error {
     constructor(message, exitCode = 2) {
@@ -82,6 +83,7 @@ function usage() {
   glory-game init-config [--project <repo-or-cocos-path>] [--output <path>] [--stdout|--non-interactive] [--format yaml|json]
   glory-game plan --config <path> [--project <path>] [--json]
   glory-game apply --config <path> [--project <path>] [--scaffold] [--dry-run] [--skip-submodule]
+  glory-game sync [--project <path>] [--config <path>] [--dry-run]
   glory-game cocos-build --config <path> [--project <path>] [--mode debug|release]
                           [--output-name <name>] [--dry-run]
   glory-game android-build --config <path> --input <cocos-output> [--mode debug|release]
@@ -94,7 +96,7 @@ function usage() {
   macOS、Cocos Creator 3.8.x、Android，以及已识别项目结构的 glory-adsdk 接入。
 
 快速接入：
-  init-config 问包名；启动场景写入 glory-game.yaml。对方电脑不需要本机 Cocos profiles。桌面名和图标以后改 yaml 的 game.name / game.icon，不参与初始化。
+  init-config 问包名。game.appKey / game.appId / game.appSecret 只写 yaml 一次，glory-game sync 灌进宿主。
   integrate --scaffold 可在暂不填写 SDK 后台/隐私参数时完成 SDK、Cocos 和 Android Debug 编译。
   该模式生成的 APK 仅用于验证接入和编译，不能发布；以后填写真实参数后重新 integrate 即可。
 
@@ -241,7 +243,8 @@ function validateConfig(config) {
     if (!isMissingConfigValue(config.cocos?.startScene) && typeof config.cocos.startScene !== 'string') {
         errors.push('cocos.startScene 必须是场景路径字符串，例如 assets/scene/Main.scene');
     }
-    if (!isMissingConfigValue(config.game?.icon) && (typeof config.game.icon !== 'string' || !/\.png$/i.test(config.game.icon))) {
+    const icon = hostValue(config, 'icon');
+    if (!isMissingConfigValue(icon) && (typeof icon !== 'string' || !/\.png$/i.test(icon))) {
         errors.push('game.icon 必须是相对工程根目录的 PNG 路径');
     }
     if (errors.length) throw new CliError(`配置无效：\n- ${errors.join('\n- ')}`);
@@ -263,14 +266,13 @@ function validateApplyConfig(config) {
         ['sdk.submodulePath', config.sdk?.submodulePath],
         ['sdk.submoduleUrl', config.sdk?.submoduleUrl],
         ['sdk.commit', config.sdk?.commit],
-        ['sdk.gameCenterAppSecretEnv', config.sdk?.gameCenterAppSecretEnv],
     ];
     for (const [name, value] of required) {
         if (value === undefined || value === null || value === '' || value === 'REQUIRED') errors.push(`缺少真实参数 ${name}`);
     }
     if (typeof config.game?.offlineGame !== 'boolean') errors.push('game.offlineGame 必须是布尔值');
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.sdk?.gameCenterAppSecretEnv || '')) {
-        errors.push('sdk.gameCenterAppSecretEnv 不是有效的环境变量名');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(hostValue(config, 'gameCenterAppSecretEnv') || '')) {
+        errors.push('game.gameCenterAppSecretEnv 不是有效的环境变量名');
     }
     if (errors.length) {
         throw new CliError(`接入配置不完整：\n- ${errors.join('\n- ')}\n请补全配置后重试；可运行 init-config --stdout 查看完整字段。`);
@@ -457,6 +459,25 @@ function isMissingConfigValue(value) {
     return value === undefined || value === null || value === '' || String(value).startsWith('REQUIRED');
 }
 
+function hostValue(config, name) {
+    const aliases = {
+        appKey: ['appKey', 'gameCenterAppKey'],
+        appId: ['appId', 'adProviderAppId', 'supplierAppId', 'providerAppId'],
+        appSecret: ['appSecret'],
+        icon: ['icon'],
+        gameCenterAppSecretEnv: ['gameCenterAppSecretEnv'],
+    };
+    const keys = aliases[name] || [name];
+    for (const key of keys) {
+        if (!isMissingConfigValue(config.game?.[key])) return config.game[key];
+    }
+    for (const key of keys) {
+        if (!isMissingConfigValue(config.sdk?.[key])) return config.sdk[key];
+    }
+    if (name === 'gameCenterAppSecretEnv') return VERIFIED_COCOS_38_PROFILE.sdk.gameCenterAppSecretEnv;
+    return '';
+}
+
 function printConfigStatus(project, configPath, config) {
     const sections = [
         ['基础', [
@@ -465,10 +486,10 @@ function printConfigStatus(project, configPath, config) {
             ['game.offlineGame', config.game?.offlineGame],
             ['cocos.startScene', config.cocos?.startScene],
         ]],
-        ['SDK 后台', [
-            ['sdk.gameCenterAppKey', config.sdk?.gameCenterAppKey],
-            ['sdk.providerAppId', config.sdk?.providerAppId],
-            ['sdk.supplierAppId', config.sdk?.supplierAppId],
+        ['游戏参数', [
+            ['game.appKey', hostValue(config, 'appKey')],
+            ['game.appId', hostValue(config, 'appId')],
+            ['game.appSecret', hostValue(config, 'appSecret')],
         ]],
         ['隐私', [
             ['privacy.policyUrl', config.privacy?.policyUrl],
@@ -485,8 +506,8 @@ function printConfigStatus(project, configPath, config) {
         if (!missing.length) console.log(`✓ ${section}：已填写`);
         else console.log(`○ ${section}：以后补 ${missing.join('、')}`);
     }
-    const secretEnv = config.sdk?.gameCenterAppSecretEnv || VERIFIED_COCOS_38_PROFILE.sdk.gameCenterAppSecretEnv;
-    console.log(`${process.env[secretEnv] ? '✓' : '○'} 运行密钥：${secretEnv}${process.env[secretEnv] ? ' 已设置' : ' 尚未设置（构建前再设置）'}`);
+    const hasSecret = !isMissingConfigValue(hostValue(config, 'appSecret')) || Boolean(process.env[hostValue(config, 'gameCenterAppSecretEnv')]);
+    console.log(`${hasSecret ? '✓' : '○'} 运行密钥：game.appSecret${hasSecret ? ' 已填写' : ' 尚未填写'}`);
     console.log('○ Release 签名：Debug 阶段不需要');
     console.log(missingCount ? `\n当前还有 ${missingCount} 个游戏专属字段；可以分批填写，不影响先做 inspect。` : '\n游戏专属配置已齐，可以执行 integrate --dry-run。');
 }
@@ -557,6 +578,10 @@ function initialConfig(project) {
             versionName: '1.0.0',
             orientation: detectedOrientation(project) || 'portrait',
             offlineGame: false,
+            icon: DEFAULT_GAME_ICON,
+            appKey: '',
+            appId: '',
+            appSecret: '',
         },
         cocos: {
             version,
@@ -601,7 +626,7 @@ async function askBoolean(rl, label, currentValue) {
 
 function nextConfigSection(config) {
     if ([config.game?.packageName, config.game?.orientation, config.game?.offlineGame].some(isMissingConfigValue)) return 'game';
-    if ([config.sdk?.gameCenterAppKey, config.sdk?.providerAppId, config.sdk?.supplierAppId].some(isMissingConfigValue)) return 'sdk';
+    if ([hostValue(config, 'appKey'), hostValue(config, 'appId'), hostValue(config, 'appSecret')].some(isMissingConfigValue)) return 'sdk';
     if ([config.privacy?.policyUrl, config.privacy?.skipBeforeTime].some(isMissingConfigValue)) return 'privacy';
     return null;
 }
@@ -634,15 +659,15 @@ async function configureProject(project, options, requestedSection) {
             });
             config.game.offlineGame = await askBoolean(rl, '是否为单机游戏', config.game.offlineGame);
         } else if (section === 'sdk') {
-            config.sdk ||= {};
-            config.sdk.gameCenterAppKey = await askValue(rl, '游戏中心 app_key', {
-                defaultValue: isMissingConfigValue(config.sdk.gameCenterAppKey) ? undefined : config.sdk.gameCenterAppKey,
+            config.game ||= {};
+            config.game.appKey = await askValue(rl, 'appKey', {
+                defaultValue: isMissingConfigValue(hostValue(config, 'appKey')) ? undefined : hostValue(config, 'appKey'),
             });
-            config.sdk.providerAppId = await askValue(rl, '广告 Provider App ID', {
-                defaultValue: isMissingConfigValue(config.sdk.providerAppId) ? undefined : config.sdk.providerAppId,
+            config.game.appId = await askValue(rl, 'appId', {
+                defaultValue: isMissingConfigValue(hostValue(config, 'appId')) ? undefined : hostValue(config, 'appId'),
             });
-            config.sdk.supplierAppId = await askValue(rl, 'OPPO supplier/MobAd App ID', {
-                defaultValue: isMissingConfigValue(config.sdk.supplierAppId) ? undefined : config.sdk.supplierAppId,
+            config.game.appSecret = await askValue(rl, 'appSecret', {
+                defaultValue: isMissingConfigValue(hostValue(config, 'appSecret')) ? undefined : hostValue(config, 'appSecret'),
             });
         } else {
             config.privacy ||= {};
@@ -709,7 +734,8 @@ async function initConfig(project, options) {
     else {
         console.log('初始化完成。下一步：');
         console.log('glory-game apply');
-        console.log('glory-game cocos-build');
+        console.log('glory-game sync          # 把 game 里的 name/icon/appKey/appId/appSecret 写入宿主');
+        console.log('glory-game cocos-build   # 只要新的 Android 工程才需要');
     }
 }
 
@@ -970,24 +996,22 @@ function inspectProject(project, config) {
             const identityMatches = manifestContent.includes(`package="${config.game.packageName}"`)
                 && applicationContent.includes(`import ${config.game.packageName}.BuildConfig;`);
             addCheck(checks, 'config.game-identity', identityMatches ? 'pass' : 'warn', identityMatches ? '包名和 BuildConfig 与接入配置一致' : '包名或 BuildConfig 与接入配置不一致');
-            if (config.sdk?.providerAppId) {
-                const providerMatches = applicationContent.includes(`config.adProviderAppId = "${config.sdk.providerAppId}";`);
-                addCheck(checks, 'config.provider-app-id', providerMatches ? 'pass' : 'warn', providerMatches ? '广告 Provider App ID 与配置一致' : '广告 Provider App ID 与配置不一致');
+            if (hostValue(config, 'appId')) {
+                const appId = String(hostValue(config, 'appId'));
+                const providerMatches = applicationContent.includes(`config.adProviderAppId = "${appId}";`);
+                const supplierMatches = supplierConfig?.supplier?.oppo?.appid === appId;
+                addCheck(checks, 'config.app-id', providerMatches && supplierMatches ? 'pass' : 'warn', providerMatches && supplierMatches ? 'appId 已写入 MyApplication 和 supplierconfig' : 'appId 与宿主不一致');
             }
-            if (config.sdk?.supplierAppId) {
-                const supplierMatches = supplierConfig?.supplier?.oppo?.appid === config.sdk.supplierAppId;
-                addCheck(checks, 'config.supplier-app-id', supplierMatches ? 'pass' : 'warn', supplierMatches ? 'supplier OPPO App ID 与配置一致' : 'supplier OPPO App ID 与配置不一致');
-            }
-            if (config.sdk?.gameCenterAppKey) {
-                const gameCenterKeyMatches = manifestContent.includes(`android:name="app_key" android:value="${config.sdk.gameCenterAppKey}"`);
-                addCheck(checks, 'config.game-center-app-key', gameCenterKeyMatches ? 'pass' : 'warn', gameCenterKeyMatches ? '游戏中心 app_key 与配置一致' : '游戏中心 app_key 与配置不一致');
+            if (hostValue(config, 'appKey')) {
+                const gameCenterKeyMatches = manifestContent.includes(`android:name="app_key" android:value="${hostValue(config, 'appKey')}"`);
+                addCheck(checks, 'config.app-key', gameCenterKeyMatches ? 'pass' : 'warn', gameCenterKeyMatches ? 'appKey 已写入 Manifest' : 'appKey 与 Manifest 不一致');
             }
             if (config.privacy?.policyUrl && config.privacy?.skipBeforeTime) {
                 const privacyMatches = applicationContent.includes(`privacyConfig.privacyPolicyUrl = "${config.privacy.policyUrl}";`)
                     && applicationContent.includes(`config.skipPrivacyBeforeTime = "${config.privacy.skipBeforeTime}";`);
                 addCheck(checks, 'config.privacy', privacyMatches ? 'pass' : 'warn', privacyMatches ? '隐私地址和时间策略与配置一致' : '隐私地址或时间策略与配置不一致');
             }
-            const secretEnv = config.sdk?.gameCenterAppSecretEnv;
+            const secretEnv = hostValue(config, 'gameCenterAppSecretEnv');
             addCheck(
                 checks,
                 'config.game-center-secret',
@@ -1390,8 +1414,9 @@ function transformManifest(content, config) {
     const metadata = [
         ['debug_mode', 'false'],
         ['is_offline_game', String(config.game.offlineGame)],
-        ['app_key', config.sdk.gameCenterAppKey],
     ];
+    const appKey = hostValue(config, 'appKey');
+    if (!isMissingConfigValue(appKey)) metadata.push(['app_key', appKey]);
     for (const [name, value] of metadata) {
         const pattern = new RegExp(`<meta-data\\s+android:name="${escapeRegExp(name)}"[^>]*/>`);
         const tag = `<meta-data android:name="${name}" android:value="${escapeXml(value)}" />`;
@@ -1563,7 +1588,7 @@ function transformProguardRules(content) {
 }
 
 function createMyApplication(config) {
-    const providerAppId = escapeJava(config.sdk?.providerAppId || '');
+    const providerAppId = escapeJava(hostValue(config, 'appId') || '');
     const skipPrivacyBeforeTime = escapeJava(config.privacy?.skipBeforeTime || '');
     const policyUrl = escapeJava(config.privacy?.policyUrl || '');
     return `// glory-game-managed:v1
@@ -1579,18 +1604,8 @@ import com.glory.adsdk.AdSdk;
 import com.glory.adsdk.AdSdkConfig;
 
 /*
- * 新游戏接入参数修改位置：
- * 1. OPPO GameCenter app_key：
- *    app/AndroidManifest.xml 中 android:name="app_key" 的 meta-data。
- * 2. 广告 Provider App ID：
- *    本文件中的 config.adProviderAppId。
- * 3. OPPO Supplier App ID：
- *    app/assets/supplierconfig.json 中 supplier.oppo.appid。
- * 4. 隐私协议地址和跳过时间：
- *    本文件中的 privacyConfig.privacyPolicyUrl 和 config.skipPrivacyBeforeTime。
- * 5. GameCenter Secret：
- *    环境变量 GLORY_GAME_CENTER_APP_SECRET，由 app/build.gradle 写入 BuildConfig，
- *    不要把 Secret 明文提交到本文件。
+ * appKey / appId / appSecret 只改 glory-game.yaml 的 game 段，然后 glory-game sync。
+ * 隐私协议仍改本文件。
  */
 public class MyApplication extends MultiDexApplication {
 
@@ -1633,11 +1648,12 @@ function gradleProjectName(config) {
 const LAUNCHER_MIPMAPS = ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi'];
 
 function resolveGameIconPath(project, config) {
-    const raw = config.game?.icon;
+    const raw = hostValue(config, 'icon');
     if (isMissingConfigValue(raw)) return null;
     const iconPath = isAbsolute(raw) ? raw : resolve(project, raw);
     if (!existsSync(iconPath) || !statSync(iconPath).isFile()) {
-        throw new CliError(`找不到桌面图标：${iconPath}`);
+        console.warn(`桌面图标还不存在，跳过拷贝：${iconPath}`);
+        return null;
     }
     if (!/\.png$/i.test(iconPath)) throw new CliError(`桌面图标必须是 PNG：${iconPath}`);
     return iconPath;
@@ -1646,7 +1662,7 @@ function resolveGameIconPath(project, config) {
 function applyGameIcon(project, config, extraResRoots = [], dryRun = false) {
     const source = resolveGameIconPath(project, config);
     if (!source) return [];
-    const roots = [join(project, 'native', 'engine', 'android', 'res'), ...extraResRoots.filter(Boolean)];
+    const roots = [join(project, 'native', 'engine', 'android', 'res')];
     const written = [];
     for (const root of roots) {
         for (const density of LAUNCHER_MIPMAPS) {
@@ -1659,6 +1675,171 @@ function applyGameIcon(project, config, extraResRoots = [], dryRun = false) {
         }
     }
     return written;
+}
+
+function applyHostCredentials(project, config, dryRun = false) {
+    const nativeRoot = join(project, 'native', 'engine', 'android');
+    const appKey = hostValue(config, 'appKey');
+    const appId = hostValue(config, 'appId');
+    const appSecret = hostValue(config, 'appSecret');
+    const changes = [];
+    if (isMissingConfigValue(appKey) && isMissingConfigValue(appId) && isMissingConfigValue(appSecret)) return changes;
+
+    const manifest = join(nativeRoot, 'app', 'AndroidManifest.xml');
+    if (!isMissingConfigValue(appKey) && existsSync(manifest)) {
+        const before = readText(manifest);
+        const pattern = /(<meta-data\s+android:name="app_key"\s+android:value=")[^"]*("\s*\/>)/;
+        const after = pattern.test(before)
+            ? before.replace(pattern, `$1${escapeXml(appKey)}$2`)
+            : before.replace(/(\s*<activity\b)/, `\n        <meta-data android:name="app_key" android:value="${escapeXml(appKey)}" />\n$1`);
+        if (after !== before) {
+            changes.push({ path: manifest, description: 'appKey → Manifest' });
+            if (!dryRun) writeFileSync(manifest, after, 'utf8');
+        }
+    }
+
+    if (!isMissingConfigValue(appId)) {
+        const application = join(nativeRoot, 'app', 'src', 'com', 'cocos', 'game', 'MyApplication.java');
+        if (existsSync(application)) {
+            const before = readText(application);
+            const after = before.replace(/config\.adProviderAppId\s*=\s*"[^"]*"/, `config.adProviderAppId = "${escapeJava(appId)}"`);
+            if (after !== before) {
+                changes.push({ path: application, description: 'appId → MyApplication' });
+                if (!dryRun) writeFileSync(application, after, 'utf8');
+            }
+        }
+        const supplier = join(nativeRoot, 'app', 'assets', 'supplierconfig.json');
+        if (existsSync(supplier) || existsSync(join(nativeRoot, 'app'))) {
+            const data = existsSync(supplier)
+                ? readJson(supplier, 'supplierconfig.json')
+                : { supplier: { vivo: { appid: '' }, xiaomi: { appid: '' }, huawei: { appid: '' }, oppo: { appid: '' } } };
+            data.supplier ||= {};
+            data.supplier.oppo ||= {};
+            if (String(data.supplier.oppo.appid || '') !== String(appId)) {
+                data.supplier.oppo.appid = String(appId);
+                changes.push({ path: supplier, description: 'appId → supplierconfig.json' });
+                if (!dryRun) {
+                    mkdirSync(dirname(supplier), { recursive: true });
+                    writeFileSync(supplier, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+                }
+            }
+        }
+    }
+
+    if (!isMissingConfigValue(appSecret)) {
+        const proj = findGeneratedProject(project);
+        const propertyFiles = [
+            join(nativeRoot, 'app', 'gradle.properties'),
+            proj ? join(proj, 'gradle.properties') : null,
+        ].filter(Boolean);
+        for (const properties of propertyFiles) {
+            const before = existsSync(properties) ? readText(properties) : '';
+            const after = setGradleProperty(before || '\n', 'GLORY_GAME_CENTER_APP_SECRET', appSecret);
+            if (after !== before) {
+                changes.push({ path: properties, description: 'appSecret → gradle.properties' });
+                if (!dryRun) {
+                    mkdirSync(dirname(properties), { recursive: true });
+                    writeFileSync(properties, after, 'utf8');
+                }
+            }
+        }
+    }
+    return changes;
+}
+
+function upsertAppNameResource(path, appName, dryRun) {
+    const tag = `<string name="app_name" translatable="false">${escapeXml(appName)}</string>`;
+    let content = existsSync(path) ? readText(path) : '<resources>\n</resources>\n';
+    if (!/<resources[\s>]/.test(content)) content = '<resources>\n</resources>\n';
+    const next = /<string\s+name="app_name"[\s\S]*?<\/string>/.test(content)
+        ? content.replace(/<string\s+name="app_name"[\s\S]*?<\/string>/, tag)
+        : content.replace(/<\/resources>/, `    ${tag}\n</resources>`);
+    if (next === content) return false;
+    if (!dryRun) {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, next.endsWith('\n') ? next : `${next}\n`, 'utf8');
+    }
+    return true;
+}
+
+function removeAppNameResource(path, dryRun) {
+    if (!existsSync(path)) return false;
+    const content = readText(path);
+    if (!/<string\s+name="app_name"[\s\S]*?<\/string>/.test(content)) return false;
+    const next = content.replace(/\s*<string\s+name="app_name"[\s\S]*?<\/string>/, '');
+    if (next === content) return false;
+    if (!dryRun) writeFileSync(path, next.endsWith('\n') ? next : `${next}\n`, 'utf8');
+    return true;
+}
+
+function applyAppName(project, config, dryRun = false) {
+    const appName = config.game?.name;
+    if (isMissingConfigValue(appName)) return [];
+    const changes = [];
+    const nativeStrings = join(project, 'native', 'engine', 'android', 'res', 'values', 'strings.xml');
+    if (removeAppNameResource(nativeStrings, dryRun)) {
+        changes.push({ path: nativeStrings, description: '去掉 native 里重复的 app_name' });
+    }
+    const proj = findGeneratedProject(project);
+    if (proj) {
+        const projStrings = join(proj, 'res', 'values', 'strings.xml');
+        if (upsertAppNameResource(projStrings, appName, dryRun)) {
+            changes.push({ path: projStrings, description: `桌面名 → ${appName}` });
+        }
+        const properties = join(proj, 'gradle.properties');
+        if (existsSync(properties)) {
+            const before = readText(properties);
+            const after = setGradleProperty(before, 'PROP_APP_NAME', appName);
+            if (after !== before) {
+                changes.push({ path: properties, description: `PROP_APP_NAME → ${appName}` });
+                if (!dryRun) writeFileSync(properties, after, 'utf8');
+            }
+        }
+    }
+    return changes;
+}
+
+function uniquePaths(paths) {
+    const seen = new Set();
+    const out = [];
+    for (const path of paths.filter(Boolean)) {
+        const key = resolve(path);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(path);
+    }
+    return out;
+}
+
+function syncYamlHost(project, config, dryRun = false, extraResRoots = []) {
+    const proj = findGeneratedProject(project);
+    const extraRes = uniquePaths([
+        proj ? join(proj, 'res') : null,
+        ...extraResRoots,
+    ]);
+    const changes = [
+        ...applyAppName(project, config, dryRun),
+        ...applyHostCredentials(project, config, dryRun),
+    ];
+    const iconFiles = applyGameIcon(project, config, extraRes, dryRun);
+    const iconRoots = new Map();
+    for (const path of iconFiles) {
+        const root = dirname(dirname(path));
+        iconRoots.set(root, (iconRoots.get(root) || 0) + 1);
+    }
+    for (const [path, count] of iconRoots) {
+        changes.push({ path, description: `桌面图标 → ${count} 个 mipmap ic_launcher.png` });
+    }
+    return changes;
+}
+
+function printYamlHostChanges(changes, dryRun) {
+    if (!changes.length) {
+        console.log('yaml 里的桌面名、图标、appKey、appId、appSecret 无需改写（空值跳过，或已经一致）。');
+        return;
+    }
+    console.log(dryRun ? '将按 yaml 写入宿主：' : '已按 yaml 写入宿主：');
+    for (const item of changes) console.log(`  ${item.description}（${item.path}）`);
 }
 
 function createCocosSettings(config) {
@@ -1684,7 +1865,7 @@ function createSupplierConfig(config) {
             vivo: { appid: '' },
             xiaomi: { appid: '' },
             huawei: { appid: '' },
-            oppo: { appid: String(config.sdk.supplierAppId) },
+            oppo: { appid: String(hostValue(config, 'appId') || '') },
         },
     }, null, 2)}\n`;
 }
@@ -2105,7 +2286,11 @@ async function cocosBuild(project, config, options) {
     console.log(`输出：${outputPath}`);
     console.log(`启动场景：${startScene.path}（${startScene.reason}）`);
     console.log(`桌面名称：${config.game.name}`);
-    if (!isMissingConfigValue(config.game?.icon)) console.log(`桌面图标：${config.game.icon}`);
+    const icon = hostValue(config, 'icon');
+    if (!isMissingConfigValue(icon)) console.log(`桌面图标：${icon}`);
+    if (!isMissingConfigValue(hostValue(config, 'appKey'))) console.log('appKey：已填写');
+    if (!isMissingConfigValue(hostValue(config, 'appId'))) console.log('appId：已填写');
+    if (!isMissingConfigValue(hostValue(config, 'appSecret'))) console.log('appSecret：已填写');
     if (startScene.reason !== 'glory-game.yaml') {
         console.warn('启动场景未写入 glory-game.yaml。对方电脑没有本机 Cocos profiles，请把这个路径提交进配置。');
     }
@@ -2114,11 +2299,7 @@ async function cocosBuild(project, config, options) {
     console.log(`命令：${inspection.creator.path} ${args.map((arg) => JSON.stringify(arg)).join(' ')}\n`);
     if (options['dry-run']) {
         console.log(JSON.stringify(buildConfig, null, 2));
-        const plannedIcons = applyGameIcon(project, config, [join(outputPath, 'proj', 'res')], true);
-        if (plannedIcons.length) {
-            console.log('将写入桌面图标：');
-            for (const path of plannedIcons) console.log(`  ${path}`);
-        }
+        printYamlHostChanges(syncYamlHost(project, config, true, [join(outputPath, 'proj', 'res')]), true);
         console.log('\nDRY RUN：未创建配置、未启动 Creator、未修改工程。');
         return { outputPath, buildConfig, dryRun: true };
     }
@@ -2156,8 +2337,7 @@ async function cocosBuild(project, config, options) {
     console.log(`\nCocos Android 工程生成成功：${outputPath}`);
 
     applyGloryConfigToGeneratedProject(join(outputPath, 'proj'), config, project, inspection.java.path);
-    const iconFiles = applyGameIcon(project, config, [join(outputPath, 'proj', 'res')]);
-    if (iconFiles.length) console.log(`已写入桌面图标：${config.game.icon} → mipmap ic_launcher.png`);
+    printYamlHostChanges(syncYamlHost(project, config, false, [join(outputPath, 'proj', 'res')]), false);
 
     const imager = join(project, 'settings', 'v2', 'packages', 'imager.json');
     if (existsSync(imager)) {
@@ -2188,16 +2368,16 @@ async function androidBuild(project, config, options) {
     const gradleProject = existsSync(join(input, 'proj', 'gradlew')) ? join(input, 'proj') : input;
     const gradlew = join(gradleProject, 'gradlew');
     if (!existsSync(gradlew)) throw new CliError(`缺少 Gradle Wrapper：${gradlew}`);
-    const secretEnv = config.sdk?.gameCenterAppSecretEnv;
+    const secretEnv = hostValue(config, 'gameCenterAppSecretEnv');
     const managedApplication = readText(join(project, 'native', 'engine', 'android', 'app', 'src', 'com', 'cocos', 'game', 'MyApplication.java'))
         .includes('BuildConfig.GLORY_GAME_CENTER_APP_SECRET');
-    let gameCenterSecret = secretEnv ? process.env[secretEnv] : null;
+    let gameCenterSecret = hostValue(config, 'appSecret') || (secretEnv ? process.env[secretEnv] : null);
     if (!gameCenterSecret && options.scaffold) gameCenterSecret = 'PENDING_CONFIGURATION';
     if (!options['dry-run'] && managedApplication && !gameCenterSecret) {
-        throw new CliError(`缺少游戏中心密钥环境变量：${secretEnv || '(未配置)'}`);
+        throw new CliError('缺少 game.appSecret（也可设置环境变量 GLORY_GAME_CENTER_APP_SECRET）');
     }
     if (gameCenterSecret && !/^[A-Za-z0-9._-]+$/.test(gameCenterSecret)) {
-        throw new CliError(`游戏中心密钥环境变量 ${secretEnv} 含不支持的字符`);
+        throw new CliError('game.appSecret 含不支持的字符');
     }
     const normalization = normalizeGeneratedGradle(project, gradleProject, config, inspection.java.path, Boolean(options['dry-run']));
     const task = mode === 'debug' ? 'assembleDebug' : 'assembleRelease';
@@ -2342,15 +2522,28 @@ async function main() {
         const loadedConfig = loadConfig(project, options, true).value;
         const config = createScaffoldConfig(project, loadedConfig);
         if ([
-            loadedConfig.sdk?.gameCenterAppKey,
-            loadedConfig.sdk?.providerAppId,
-            loadedConfig.sdk?.supplierAppId,
+            hostValue(loadedConfig, 'appKey'),
+            hostValue(loadedConfig, 'appId'),
+            hostValue(loadedConfig, 'appSecret'),
             loadedConfig.privacy?.policyUrl,
             loadedConfig.privacy?.skipBeforeTime,
         ].some(isMissingConfigValue)) {
-            console.warn('广告、隐私参数未填，宿主先留空。以后改 MyApplication、Manifest 的 app_key、supplierconfig.json。');
+            console.warn('game.appKey / appId / appSecret 或隐私未填。填 yaml 后 glory-game sync；隐私仍改 MyApplication。');
         }
         applyIntegration(project, config, options);
+        printYamlHostChanges(syncYamlHost(project, loadedConfig, Boolean(options['dry-run'])), Boolean(options['dry-run']));
+        return;
+    }
+    if (command === 'sync') {
+        const nativeRoot = join(project, 'native', 'engine', 'android');
+        if (!existsSync(nativeRoot)) {
+            throw new CliError('还没有 native/engine/android。先 glory-game apply（或第一次 cocos-build 出模板），再 sync。');
+        }
+        const config = loadConfig(project, options, true).value;
+        const dryRun = Boolean(options['dry-run']);
+        printYamlHostChanges(syncYamlHost(project, config, dryRun), dryRun);
+        if (dryRun) console.log('\nDRY RUN：未修改工程。');
+        else console.log('Android Studio 对当前打开的工程 Rebuild 即可，不用再跑 Creator。');
         return;
     }
     if (command === 'cocos-build') {

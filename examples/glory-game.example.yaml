@@ -1,14 +1,16 @@
-# glory-game CLI 共用构建参数。广告、隐私、密钥只改宿主文件，不要写进本文件。
 schemaVersion: 1
 profile: glory-oppo-cocos-3.8-v1
 game:
   name: ExampleGame
-  icon: assets/icon/ic_launcher.png
   packageName: com.example.game.nearme.gamecenter
   versionCode: 1
   versionName: 1.0.0
   orientation: portrait
   offlineGame: false
+  icon: assets/icon/ic_launcher.png
+  appKey: ''
+  appId: ''
+  appSecret: ''
 cocos:
   version: 3.8.6
   startScene: assets/scene/Main.scene

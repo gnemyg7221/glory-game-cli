@@ -14,6 +14,13 @@ glory-game version
 
 ---
 
+## 0.8.0 - 2026-09-16
+
+### 新增
+
+- `game:` 只写一次 `appKey`、`appId`、`appSecret`。`glory-game sync` 灌到 Manifest、MyApplication、supplierconfig、gradle.properties。同一个 appId 两处都用。空着不覆盖。
+- 桌面名、图标同样写在 `game.name` / `game.icon`（默认 `assets/icon/ic_launcher.png`），也走 sync。`apply` / `cocos-build` 会做同一套写入。
+
 ## 0.7.0 - 2026-09-15
 
 ### 新增
@@ -24,7 +31,7 @@ glory-game version
 
 ### 变更
 
-- 改名字或图标后跑 `cocos-build`，不用 `apply`。
+- 改名字或图标后跑 `glory-game sync`，不用 `apply`，也不用再编 Creator。
 
 ## 0.6.0 - 2026-09-15
 
