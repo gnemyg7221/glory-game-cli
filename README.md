@@ -85,7 +85,7 @@ glory-game status --project /path/to/game-or-repository
 
 ```bash
 glory-game init-config
-glory-game cocos-build    # 生成 Android 模板
+glory-game cocos-build    # 默认 release，开启 JS 加密；明文调试加 --mode debug
 glory-game apply
 glory-game cocos-build    # 生成带 SDK 的 proj，Studio 打开这一份
 ```

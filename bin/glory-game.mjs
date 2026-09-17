@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -86,6 +87,7 @@ function usage() {
   glory-game sync [--project <path>] [--config <path>] [--dry-run]
   glory-game cocos-build --config <path> [--project <path>] [--mode debug|release]
                           [--output-name <name>] [--dry-run]
+                          默认 release，并开启 packages.native.encrypted。明文调试必须 --mode debug。
   glory-game android-build --config <path> --input <cocos-output> [--mode debug|release]
                             [--dry-run]
   glory-game integrate --config <path> [--project <path>] [--mode debug|release] [--scaffold] [--dry-run]
@@ -636,7 +638,7 @@ async function configureProject(project, options, requestedSection) {
     const config = loaded.value;
     const section = requestedSection || nextConfigSection(config);
     if (!section) {
-        console.log('游戏专属配置已经填齐。下一步运行 glory-game integrate --mode debug --dry-run');
+        console.log('游戏专属配置已经填齐。下一步运行 glory-game integrate --dry-run');
         return;
     }
     if (!process.stdin.isTTY || !process.stdout.isTTY) throw new CliError('configure 需要在交互式终端中运行');
@@ -1148,6 +1150,36 @@ function orientationValue(value) {
     };
 }
 
+function resolveCocosBuildMode(options, defaultMode = 'release') {
+    const mode = String(options.mode || defaultMode);
+    if (!['debug', 'release'].includes(mode)) throw new CliError('--mode 只能是 debug 或 release');
+    return mode;
+}
+
+function createXxteaKey() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    return Array.from(randomBytes(16), (byte) => chars[byte % chars.length]).join('');
+}
+
+function printCocosBuildBanner(mode, encrypted, modeWasExplicit) {
+    const line = '------------------------------------------------------------';
+    if (mode === 'debug') {
+        console.warn(line);
+        console.warn('[DEBUG] 本次是明文调试构建');
+        console.warn(modeWasExplicit ? '[DEBUG] 因为显式传了 --mode debug' : '[DEBUG] 当前命令默认不应走到这里');
+        console.warn('[DEBUG] packages.native.encrypted=false，脚本是明文 .js');
+        console.warn('[DEBUG] 不能发包、不能给渠道。正式构建请直接：glory-game cocos-build');
+        console.warn(line);
+        return;
+    }
+    console.log(line);
+    console.log('[RELEASE] 本次是正式构建（cocos-build 默认就是 release）');
+    console.log(`[RELEASE] 原生 JS 加密：${encrypted ? '已开启 packages.native.encrypted=true' : '未开启'}`);
+    console.log('[RELEASE] 产物应为 .jsc，不是明文脚本');
+    console.log('[RELEASE] 明文调试才需要：glory-game cocos-build --mode debug');
+    console.log(line);
+}
+
 function createCocosBuildConfig(project, config, mode, outputName, toolchain = {}) {
     const profile = loadAndroidProfile(project);
     const androidOptions = {
@@ -1167,6 +1199,15 @@ function createCocosBuildConfig(project, config, mode, outputName, toolchain = {
     if (toolchain.sdkPath) androidOptions.sdkPath = toolchain.sdkPath;
     if (toolchain.ndkPath) androidOptions.ndkPath = toolchain.ndkPath;
     if (toolchain.javaHome) androidOptions.javaHome = toolchain.javaHome;
+    const encrypted = mode !== 'debug';
+    const nativeOptions = {
+        encrypted,
+        compressZip: false,
+        JobSystem: 'none',
+    };
+    if (encrypted) {
+        nativeOptions.xxteaKey = String(config.cocos?.xxteaKey || '').trim() || createXxteaKey();
+    }
     const buildRoot = resolve(project, config.cocos.buildRoot || 'build');
     const buildConfig = {
         taskName: 'android',
@@ -1175,13 +1216,14 @@ function createCocosBuildConfig(project, config, mode, outputName, toolchain = {
         buildPath: buildRoot,
         outputName,
         debug: mode === 'debug',
+        sourceMaps: false,
         md5Cache: false,
         mainBundleCompressionType: profile.common.mainBundleCompressionType || 'merge_dep',
-        packages: { android: androidOptions },
+        packages: { android: androidOptions, native: nativeOptions },
     };
     const startScene = resolveBuildStartScene(project, config);
     buildConfig.startScene = startScene.uuid;
-    return { buildConfig, buildRoot, outputPath: join(buildRoot, outputName), startScene };
+    return { buildConfig, buildRoot, outputPath: join(buildRoot, outputName), startScene, nativeOptions };
 }
 
 function runProcess(command, args, options = {}) {
@@ -2258,8 +2300,8 @@ async function cocosBuild(project, config, options) {
     await ensureProjectDependencies(project, Boolean(options['dry-run']));
     const inspection = inspectProject(project, config);
     assertRequiredToolchain(inspection, config, 'cocos-build');
-    const mode = String(options.mode || 'debug');
-    if (!['debug', 'release'].includes(mode)) throw new CliError('--mode 只能是 debug 或 release');
+    const modeWasExplicit = options.mode != null && String(options.mode) !== '';
+    const mode = resolveCocosBuildMode(options, 'release');
     const outputName = String(options['output-name'] || `android-${timestamp()}`);
     if (outputName.includes('/') || outputName.includes('\\') || outputName === '.' || outputName === '..') {
         throw new CliError('--output-name 只能是单个目录名称');
@@ -2269,7 +2311,7 @@ async function cocosBuild(project, config, options) {
         ndkPath: sdkComponentPath(inspection.androidSdk, 'ndk', config.android?.ndkVersion),
         javaHome: inspection.java.path,
     };
-    const { buildConfig, buildRoot, outputPath, startScene } = createCocosBuildConfig(project, config, mode, outputName, toolchain);
+    const { buildConfig, buildRoot, outputPath, startScene, nativeOptions } = createCocosBuildConfig(project, config, mode, outputName, toolchain);
     const stateRoot = join(project, 'build', 'glory-cli');
     const configPath = join(stateRoot, 'configs', `${outputName}.json`);
     const logPath = join(stateRoot, 'logs', `${outputName}.log`);
@@ -2282,7 +2324,9 @@ async function cocosBuild(project, config, options) {
     console.log(`JDK：${inspection.java.version}（${inspection.java.path}）`);
     console.log(`Android SDK：${inspection.androidSdk}`);
     console.log(`NDK：${config.android.ndkVersion}（${toolchain.ndkPath}）`);
-    console.log(`模式：${mode}`);
+    console.log(`模式：${mode}${modeWasExplicit ? '' : '（默认 release）'}`);
+    console.log(`原生 JS 加密：${nativeOptions.encrypted ? '开启 packages.native.encrypted=true' : '关闭（明文 .js）'}`);
+    printCocosBuildBanner(mode, nativeOptions.encrypted, modeWasExplicit);
     console.log(`输出：${outputPath}`);
     console.log(`启动场景：${startScene.path}（${startScene.reason}）`);
     console.log(`桌面名称：${config.game.name}`);
@@ -2335,6 +2379,19 @@ async function cocosBuild(project, config, options) {
     for (const item of verification) console.log(`${item.exists ? '✓' : '✗'} ${item.path}`);
     if (missing.length) throw new CliError(`Creator 已退出，但缺少 ${missing.length} 个必要产物。日志：${logPath}`);
     console.log(`\nCocos Android 工程生成成功：${outputPath}`);
+    if (mode === 'release') {
+        const dataRoot = join(outputPath, 'data');
+        const jscFiles = existsSync(dataRoot)
+            ? findFiles(dataRoot, (path) => path.endsWith('.jsc'))
+            : [];
+        if (jscFiles.length === 0) {
+            console.warn('! RELEASE 已请求 packages.native.encrypted=true，但 data/ 里没有 .jsc。请检查 Creator 是否吃到 native 加密配置。');
+        } else {
+            console.log(`JS 加密产物：${jscFiles.length} 个 .jsc`);
+        }
+    } else {
+        console.warn('! DEBUG 构建脚本是明文，不要把这个工程当正式包。');
+    }
 
     applyGloryConfigToGeneratedProject(join(outputPath, 'proj'), config, project, inspection.java.path);
     printYamlHostChanges(syncYamlHost(project, config, false, [join(outputPath, 'proj', 'res')]), false);
@@ -2435,9 +2492,8 @@ async function androidBuild(project, config, options) {
 }
 
 async function integrate(project, config, options) {
-    const mode = String(options.mode || 'debug');
-    if (!['debug', 'release'].includes(mode)) throw new CliError('--mode 只能是 debug 或 release');
     const scaffold = Boolean(options.scaffold);
+    const mode = resolveCocosBuildMode(options, scaffold ? 'debug' : 'release');
     if (scaffold && mode !== 'debug') throw new CliError('--scaffold 只允许构建 debug，不能生成可发布的 release 包');
     const effectiveConfig = scaffold ? createScaffoldConfig(project, config) : config;
     validateApplyConfig(effectiveConfig);
@@ -2463,7 +2519,11 @@ async function integrate(project, config, options) {
     applyCocosPortability(project, false);
     if (!initialInspection.nativeExists) {
         console.log('阶段 1/4：生成 Cocos Android 原生模板');
-        await cocosBuild(project, effectiveConfig, { ...options, mode: 'debug', 'output-name': `glory-bootstrap-${timestamp()}` });
+        await cocosBuild(project, effectiveConfig, {
+            ...options,
+            mode: scaffold ? 'debug' : mode,
+            'output-name': `glory-bootstrap-${timestamp()}`,
+        });
     }
     console.log('\n阶段 2/4：应用 glory-adsdk 宿主接入');
     applyIntegration(project, effectiveConfig, options);
@@ -2473,7 +2533,7 @@ async function integrate(project, config, options) {
     const result = await androidBuild(project, effectiveConfig, { ...options, mode, input: cocosResult.outputPath });
     if (scaffold) {
         console.warn('\n! 接入与 Debug 编译已完成，但后台/隐私参数仍是占位值，APK 不可发布。');
-        console.warn('! 以后分批运行 glory-game configure，填完后再运行 glory-game integrate --mode debug。');
+        console.warn('! 以后分批运行 glory-game configure，填完后再运行 glory-game integrate。');
     }
     return result;
 }

@@ -14,6 +14,14 @@ glory-game version
 
 ---
 
+## 0.9.0 - 2026-09-17
+
+### 变更
+
+- `cocos-build` 默认改为 release。明文调试必须显式 `--mode debug`。
+- release 构建开启 `packages.native.encrypted=true`（XXTEA），脚本编成 `.jsc`。debug 保持明文。
+- 命令输出会明确打印 `[RELEASE]` / `[DEBUG]`，以及加密是否开启。release 结束后检查 `data/` 是否有 `.jsc`。
+
 ## 0.8.1 - 2026-09-16
 
 ### 修复
