@@ -35,7 +35,7 @@ glory-game use --project /Users/aemon/Documents/project_new_games/ShuiGuoPeiPeiD
 
 
 
-做完怎么确认：`inspect` 里 Creator、JDK 11、NDK 21\.4\.7075529、CMake 3\.22\.1、android\-29、Build Tools 30\.0\.3 都是 pass。
+做完怎么确认：`inspect` 里 Creator、JDK 11、NDK 21\.4\.7075529、CMake 3\.22\.1、android\-30、Build Tools 30\.0\.3 都是 pass。
 
 
 
@@ -233,7 +233,7 @@ glory-game cocos-build          # 步骤5 再编，T175230 才有 Jetifier 和�
 
 
 
-工具链版本（路径可以不同）：JDK 11、NDK 21\.4\.7075529、CMake 3\.22\.1、android\-29、Build Tools 30\.0\.3、生成工程 AGP 7\.4\.2 / Gradle 7\.6\.3。
+工具链版本（路径可以不同）：JDK 11、NDK 21\.4\.7075529、CMake 3\.22\.1、android\-30、Build Tools 30\.0\.3、生成工程 AGP 7\.4\.2 / Gradle 7\.6\.3。
 
 ---
 

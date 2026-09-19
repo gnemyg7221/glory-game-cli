@@ -16,7 +16,7 @@ const STATE_FILE = join(homedir(), '.config', 'glory-game', 'state.json');
 const VERIFIED_COCOS_38_PROFILE = {
     name: 'glory-oppo-cocos-3.8-v1',
     cocos: {
-        apiLevel: 29,
+        apiLevel: 30,
         appABIs: ['arm64-v8a', 'armeabi-v7a'],
         buildRoot: 'build',
         timeoutMinutes: 30,
@@ -25,8 +25,8 @@ const VERIFIED_COCOS_38_PROFILE = {
         javaVersion: 11,
         agpVersion: '7.4.2',
         gradleVersion: '7.6.3',
-        compileSdk: 29,
-        targetSdk: 29,
+        compileSdk: 30,
+        targetSdk: 30,
         buildToolsVersion: '30.0.3',
         ndkVersion: '21.4.7075529',
         cmakeVersion: '3.22.1',

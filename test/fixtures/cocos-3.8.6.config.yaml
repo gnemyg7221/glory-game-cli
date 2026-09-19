@@ -8,7 +8,7 @@ game:
   offlineGame: false
 cocos:
   version: 3.8.6
-  apiLevel: 29
+  apiLevel: 30
   appABIs:
     - arm64-v8a
     - armeabi-v7a
@@ -18,8 +18,8 @@ android:
   javaVersion: 17
   agpVersion: 8.0.2
   gradleVersion: 8.0.2
-  compileSdk: 29
-  targetSdk: 29
+  compileSdk: 30
+  targetSdk: 30
   buildToolsVersion: 30.0.3
   ndkVersion: 21.4.7075529
   cmakeVersion: 3.22.1
