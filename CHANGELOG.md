@@ -14,6 +14,13 @@ glory-game version
 
 ---
 
+## 0.9.1 - 2026-10-25
+
+### 修复
+
+- Studio 工程名不再使用包名最后一段。OPPO 包名都以 `gamecenter` 结尾，以前每个新工程都会叫这个。现在优先用 `android.projectName`，否则用 `package.json` 的 `name`（`client` 这类占位名跳过），再否则用包名里的游戏段，例如 `com.evolution.shuiguopei.app.nearme.gamecenter` 得到 `shuiguopei`。`init-config` 会把结果写进 yaml。
+- `apply` 固定 SDK commit 时挂上包含该提交的远程分支，不再 `checkout --detach`。Android Studio 顶栏显示分支名。远程分支已经超前时，HEAD 仍停在 yaml 钉死的提交。
+
 ## 0.9.0 - 2026-09-17
 
 ### 变更

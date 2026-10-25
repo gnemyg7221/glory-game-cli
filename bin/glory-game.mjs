@@ -570,6 +570,9 @@ function initialConfig(project) {
     const projectPackage = readJson(join(project, 'package.json'), 'Cocos package.json');
     const version = projectPackage.creator?.version;
     const detected = detectStartScene(project);
+    const android = { ...VERIFIED_COCOS_38_PROFILE.android };
+    const projectName = gradleProjectName({ game: { packageName: '' }, android: {} }, project);
+    if (projectName !== 'CocosGame') android.projectName = projectName;
     return {
         schemaVersion: 1,
         profile: VERIFIED_COCOS_38_PROFILE.name,
@@ -590,9 +593,7 @@ function initialConfig(project) {
             ...VERIFIED_COCOS_38_PROFILE.cocos,
             startScene: detected?.path || 'REQUIRED',
         },
-        android: {
-            ...VERIFIED_COCOS_38_PROFILE.android,
-        },
+        android,
         sdk: {
             ...VERIFIED_COCOS_38_PROFILE.sdk,
         },
@@ -702,6 +703,8 @@ async function interactiveConfig(project) {
         value.game.packageName = await askValue(rl, 'Android packageName', {
             validate: (answer) => /^[a-zA-Z][\w]*(\.[a-zA-Z][\w]*)+$/.test(answer) ? null : '不是有效的 Android 包名。',
         });
+        value.android.projectName = gradleProjectName(value, project);
+        console.log(`Studio 工程名：${value.android.projectName}`);
         if (isMissingConfigValue(value.cocos.startScene)) {
             value.cocos.startScene = await askStartScene(rl, project);
         } else {
@@ -1681,11 +1684,34 @@ public class MyApplication extends MultiDexApplication {
 `;
 }
 
-function gradleProjectName(config) {
-    const explicit = config.android?.projectName;
-    if (explicit && /^[_a-zA-Z][_a-zA-Z0-9-]*$/.test(explicit)) return explicit;
-    const last = String(config.game?.packageName || '').split('.').filter(Boolean).at(-1);
-    if (last && /^[_a-zA-Z][_a-zA-Z0-9-]*$/.test(last)) return last;
+function isGradleProjectName(value) {
+    return /^[_a-zA-Z][_a-zA-Z0-9-]*$/.test(String(value || ''));
+}
+
+const GRADLE_NAME_SKIP = new Set(['com', 'org', 'net', 'io', 'evolution', 'app', 'nearme', 'gamecenter', 'game', 'client', 'cocos']);
+
+function packageJsonGradleName(project) {
+    if (!project) return '';
+    try {
+        const name = readJson(join(project, 'package.json'), 'Cocos package.json').name;
+        if (!isGradleProjectName(name) || GRADLE_NAME_SKIP.has(String(name).toLowerCase())) return '';
+        return name;
+    } catch {
+        return '';
+    }
+}
+
+function gradleProjectName(config, project) {
+    const explicit = config?.android?.projectName;
+    if (isGradleProjectName(explicit)) return explicit;
+    const fromPackage = packageJsonGradleName(project);
+    if (fromPackage) return fromPackage;
+    const parts = String(config?.game?.packageName || '').split('.').filter(Boolean);
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+        const part = parts[index];
+        if (!isGradleProjectName(part) || GRADLE_NAME_SKIP.has(part.toLowerCase())) continue;
+        return part;
+    }
     return 'CocosGame';
 }
 
@@ -1884,8 +1910,8 @@ function printYamlHostChanges(changes, dryRun) {
     for (const item of changes) console.log(`  ${item.description}（${item.path}）`);
 }
 
-function createCocosSettings(config) {
-    const name = escapeGroovySingle(gradleProjectName(config));
+function createCocosSettings(project, config) {
+    const name = escapeGroovySingle(gradleProjectName(config, project));
     return `// glory-game-managed:v1
 include ':libcocos', ':libservice', ':app', ':glory-adsdk'
 project(':libcocos').projectDir = new File(COCOS_ENGINE_PATH, 'cocos/platform/android/libcocos2dx')
@@ -2000,7 +2026,7 @@ function planIntegrationChanges(project, config) {
     addFileChange(changes, files.proguard, transformProguardRules(readText(files.proguard)), '补齐 OPPO/GameCenter/R8 混淆保护规则');
     addFileChange(changes, files.application, createMyApplication(config), '生成 MyApplication SDK 初始化');
     addFileChange(changes, files.supplier, createSupplierConfig(config), '生成 supplierconfig.json');
-    addFileChange(changes, files.settings, createCocosSettings(config), '生成包含 glory-adsdk 的 Cocos 模块配置');
+    addFileChange(changes, files.settings, createCocosSettings(project, config), '生成包含 glory-adsdk 的 Cocos 模块配置');
     addFileChange(changes, files.mainDex, '# glory-game-managed:v1\n-keep class com.cocos.game.MyApplication { *; }\n-keep class androidx.multidex.** { *; }\n', '生成 MultiDex 主 dex 保留规则');
     const sdkPath = resolve(project, config.sdk.submodulePath);
     if (sdkPath === project || !sdkPath.startsWith(`${project}${sep}`)) {
@@ -2040,6 +2066,50 @@ function runGit(args, cwd, label) {
     return (result.stdout || '').trim();
 }
 
+function gitText(args, cwd) {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (result.status !== 0) return '';
+    return (result.stdout || '').trim();
+}
+
+function remoteBranchNames(lines) {
+    return lines.split('\n').map((line) => line.trim().replace(/^\*\s*/, '').replace(/^origin\//, ''))
+        .filter((name) => name && name !== 'HEAD' && !name.includes('->'));
+}
+
+function selectSdkBranch(sdkPath, commit) {
+    const exact = remoteBranchNames(gitText(['for-each-ref', '--format=%(refname:short)', '--points-at', commit, 'refs/remotes/origin'], sdkPath));
+    const listed = exact.length
+        ? exact
+        : remoteBranchNames(gitText(['branch', '-r', '--contains', commit], sdkPath));
+    const ranked = listed.map((name) => {
+        const ahead = Number(gitText(['rev-list', '--count', `${commit}..origin/${name}`], sdkPath));
+        return { name, ahead: Number.isFinite(ahead) ? ahead : 999999 };
+    }).sort((a, b) => a.ahead - b.ahead || a.name.localeCompare(b.name));
+    return ranked[0] || null;
+}
+
+function checkoutPinnedSdk(sdkPath, expectedCommit) {
+    const fetch = spawnSync('git', ['fetch', 'origin', '--prune'], { cwd: sdkPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (fetch.status !== 0) {
+        console.warn(`无法更新 SDK 远程分支，按本地记录固定提交：${(fetch.stderr || fetch.stdout || '').trim()}`);
+    }
+    const selected = selectSdkBranch(sdkPath, expectedCommit);
+    if (!selected) {
+        runGit(['checkout', '--detach', expectedCommit], sdkPath, '固定 SDK commit');
+        console.log(`SDK commit：${expectedCommit}（没有对应分支）`);
+        return;
+    }
+    if (selected.ahead === 0) {
+        runGit(['checkout', '-B', selected.name, `origin/${selected.name}`], sdkPath, '切到 SDK 分支');
+        console.log(`SDK 分支：${selected.name}`);
+        console.log(`SDK commit：${expectedCommit}`);
+        return;
+    }
+    runGit(['checkout', '-B', selected.name, expectedCommit], sdkPath, '按钉死的提交挂上 SDK 分支');
+    console.log(`SDK 分支：${selected.name}（远程最新超前 ${selected.ahead} 个提交，HEAD 仍是 yaml 钉死的 ${expectedCommit}）`);
+}
+
 function ensureSdkSubmodule(project, config) {
     const repositoryRoot = gitRepositoryRoot(project);
     if (!repositoryRoot) throw new CliError('目标工程不在 Git 仓库中，无法添加 SDK 子模块');
@@ -2066,12 +2136,10 @@ function ensureSdkSubmodule(project, config) {
     const status = runGit(['status', '--porcelain'], sdkPath, '检查 SDK 工作区');
     if (status) throw new CliError(`SDK 子模块存在未提交修改，停止切换版本：\n${status}`);
     const actualCommit = runGit(['rev-parse', 'HEAD'], sdkPath, '读取 SDK commit');
-    if (actualCommit !== expectedCommit) {
-        const hasCommit = spawnSync('git', ['cat-file', '-e', `${expectedCommit}^{commit}`], { cwd: sdkPath }).status === 0;
-        if (!hasCommit) runGit(['fetch', 'origin', expectedCommit], sdkPath, '获取指定 SDK commit');
-        runGit(['checkout', '--detach', expectedCommit], sdkPath, '固定 SDK commit');
-    }
-    console.log(`SDK commit：${expectedCommit}`);
+    const hasCommit = actualCommit === expectedCommit
+        || spawnSync('git', ['cat-file', '-e', `${expectedCommit}^{commit}`], { cwd: sdkPath }).status === 0;
+    if (!hasCommit) runGit(['fetch', 'origin', expectedCommit], sdkPath, '获取指定 SDK commit');
+    checkoutPinnedSdk(sdkPath, expectedCommit);
 }
 
 function requiredIntegrationFailures(inspection) {
