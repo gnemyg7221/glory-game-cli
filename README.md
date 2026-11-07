@@ -129,6 +129,8 @@ glory-game apply --project /path/to/game --config /absolute/path/to/config.json
 
 ## Studio 提示找不到构建任务
 
+完整复盘见 [Android Studio 找不到构建任务：汉字拆呀拆接入复盘](doc/android-studio-gradle-task-import.md)，包含环境、日志证据、修复步骤和真实 APK 验收结果。
+
 遇到 `Unable to find Gradle tasks to build: [:模块名]` 时，先核对当前窗口路径和包名，再检查命令行是否能列出该模块任务。例如在导出的 `proj` 目录执行：
 
 ```bash

@@ -6,6 +6,8 @@
 
 # Studio 接入验收
 
+遇到 Studio 找不到构建任务，先阅读 [汉字拆呀拆接入复盘](doc/android-studio-gradle-task-import.md)，按证据区分 IDE 同步问题和游戏本身问题。
+
 - open 命令返回成功只表示启动请求已发送；检查 Trust Project 弹框并核对实际窗口路径后，才报告工程已打开。
 - Gradle 同步成功不等于构建任务可用。遇到 Unable to find Gradle tasks to build，先用 gradlew 的模块 tasks 命令验证任务存在，再检查 Studio 的 Configure all Gradle tasks during Gradle Sync 设置并重新同步。
 - 修复后实际从 Studio 发起 Assemble 验证；临时切换离线模式时，完成后恢复原来的联网状态。
