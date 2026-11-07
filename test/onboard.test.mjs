@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { ensureSdkSubmodule, lfsPointers, runSdkGit, verifySdkFiles } from '../lib/sdk.mjs';
 import { canReuseExport, recordExport } from '../lib/exports.mjs';
 import { openAndroidStudio } from '../lib/studio.mjs';
+import { ensureIntegrationBranch, INTEGRATION_BRANCH } from '../lib/branch.mjs';
 import { gameCenterSecretCheck, requiredIntegrationFailures } from '../bin/glory-game.mjs';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'glory-onboard-tests-')));
@@ -32,6 +33,57 @@ function repository(name) {
     git(path, 'config', 'user.email', 'cli-test@example.invalid');
     return path;
 }
+
+function gameRepository(name) {
+    const path = repository(name);
+    write(join(path, 'game.txt'), 'base game');
+    git(path, 'add', 'game.txt');
+    git(path, 'commit', '-qm', 'base game');
+    return path;
+}
+
+test('接入固定使用 feature/integrate_ad_sdk，创建分支时保留暂存及未提交文件', () => {
+    const project = gameRepository('branch-create');
+    const head = git(project, 'rev-parse', 'HEAD');
+    write(join(project, 'staged.txt'), 'staged change');
+    git(project, 'add', 'staged.txt');
+    write(join(project, 'untracked.txt'), 'untracked change');
+    const status = git(project, 'status', '--porcelain');
+    assert.equal(INTEGRATION_BRANCH, 'feature/integrate_ad_sdk');
+    assert.equal(ensureIntegrationBranch(project).action, 'create');
+    assert.equal(git(project, 'branch', '--show-current'), INTEGRATION_BRANCH);
+    assert.equal(git(project, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(project, 'status', '--porcelain'), status);
+    assert.equal(ensureIntegrationBranch(project).action, 'reuse');
+});
+
+test('接入预演不创建或切换分支，已有同提交接入分支可直接复用', () => {
+    const project = gameRepository('branch-preview');
+    const current = git(project, 'branch', '--show-current');
+    const branches = git(project, 'branch', '--format=%(refname)');
+    assert.equal(ensureIntegrationBranch(project, { 'dry-run': true }).action, 'create');
+    assert.equal(git(project, 'branch', '--show-current'), current);
+    assert.equal(git(project, 'branch', '--format=%(refname)'), branches);
+    git(project, 'branch', INTEGRATION_BRANCH);
+    assert.equal(ensureIntegrationBranch(project).action, 'switch');
+    assert.equal(git(project, 'branch', '--show-current'), INTEGRATION_BRANCH);
+});
+
+test('已有接入分支提交不同则停止，保留两边提交和当前工作区', () => {
+    const project = gameRepository('branch-different');
+    git(project, 'branch', INTEGRATION_BRANCH);
+    const target = git(project, 'rev-parse', INTEGRATION_BRANCH);
+    write(join(project, 'new-game.txt'), 'later game commit');
+    git(project, 'add', 'new-game.txt');
+    git(project, 'commit', '-qm', 'later game');
+    const current = git(project, 'branch', '--show-current');
+    const head = git(project, 'rev-parse', 'HEAD');
+    assert.throws(() => ensureIntegrationBranch(project), /当前提交不同/);
+    assert.equal(git(project, 'branch', '--show-current'), current);
+    assert.equal(git(project, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(project, 'rev-parse', INTEGRATION_BRANCH), target);
+    assert.equal(readFileSync(join(project, 'new-game.txt'), 'utf8'), 'later game commit');
+});
 
 test('密钥可以来自 yaml 或环境变量，且检查输出不泄漏密钥', () => {
     const secret = 'private-test-value';

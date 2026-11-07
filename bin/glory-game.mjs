@@ -11,6 +11,7 @@ import YAML from 'yaml';
 import { ensureSdkSubmodule, verifySdkFiles } from '../lib/sdk.mjs';
 import { canReuseExport, recordExport } from '../lib/exports.mjs';
 import { openAndroidStudio } from '../lib/studio.mjs';
+import { ensureIntegrationBranch } from '../lib/branch.mjs';
 
 const CLI_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI_VERSION = JSON.parse(readFileSync(join(CLI_ROOT, 'package.json'), 'utf8')).version;
@@ -112,6 +113,7 @@ function usage() {
 
 快速接入：
   glory-game onboard
+  游戏接入分支固定为 feature/integrate_ad_sdk，自动创建或切换，保留现有改动。
   直接读游戏里已有的 other/config/apk/oppoConfig，写入 glory-game.yaml。不用再手抄 appKey、appId、appSecret。
   缺 JS 适配层时从 CLI 自带快照补齐；首次导出一次，接入后复用工程，自动打开 Android Studio。
   加上 --with-apk 才会编译 debug APK。integrate 仍会编 Gradle，接入不要用它。
@@ -2894,6 +2896,7 @@ function plannedExport(project, config, options, inspection) {
 
 async function onboard(project, options) {
     const dryRun = Boolean(options['dry-run']);
+    ensureIntegrationBranch(project, options);
     const { filePath, identity } = collectGameIdentity(project, options);
     const configPath = resolveConfigPath(project, options, false) || join(project, DEFAULT_CONFIG);
     const existed = existsSync(configPath);
