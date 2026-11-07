@@ -127,6 +127,18 @@ glory-game apply --project /path/to/game --config /absolute/path/to/config.json
 
 `apply` 会在 `build/glory-cli/backups/<timestamp>` 保存被修改文件的原内容，不会删除旧文件。
 
+## Studio 提示找不到构建任务
+
+遇到 `Unable to find Gradle tasks to build: [:模块名]` 时，先核对当前窗口路径和包名，再检查命令行是否能列出该模块任务。例如在导出的 `proj` 目录执行：
+
+```bash
+./gradlew :NumberLianLian:tasks --all --offline
+```
+
+如果命令行有 `assembleRelease` / `assembleDebug`，但 Studio 找不到，检查 **Settings → Experimental → Gradle → Configure all Gradle tasks during Gradle Sync**，启用后重新 **Sync Project with Gradle Files**。等同步完成，再用 Studio 的 Assemble 按钮确认实际开始执行构建任务。汉字拆呀拆曾通过此流程恢复。
+
+依赖已缓存时可临时启用 Gradle Offline Mode 加快复检，完成后恢复原来的联网状态。不要用删除导出目录、构建缓存或重新导出 Cocos 来代替模块模型排查。
+
 ## Release 签名
 
 keystore 路径和 alias 写在 `android.signing`，两个密码只通过配置指定的环境变量传给 Gradle。可设置 `certificateSha256`，让 APK 验收确认最终签名证书。
