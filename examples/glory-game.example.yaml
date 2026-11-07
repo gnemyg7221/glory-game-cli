@@ -32,5 +32,5 @@ android:
 sdk:
   submodulePath: native/engine/android/glory-adsdk
   submoduleUrl: git@github.com:superWalnuts/OppoGameApkAdSdk.git
-  commit: ccaef3e1ef6821928c850bd1858acafa7ab975f5
+  commit: 8abc0c887670a0736d577766d3950742e955c756
   gameCenterAppSecretEnv: GLORY_GAME_CENTER_APP_SECRET

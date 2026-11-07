@@ -1,0 +1,108 @@
+// Copyright (c) 2017-2020 Xiamen Yaji Software Co., Ltd.
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: sprite-vs:vert
+      frag: sprite-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+          blendDstAlpha: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties: &props
+        amplitude: { value: 0.01, range: [0.0, 0.5], editor: { tooltip: '振幅' } }
+        angularVelocity: { value: 10.0, editor: { tooltip: '角速度' } }
+        frequency: { value: 10.0, editor: { tooltip: '频率' } }
+        toLeft: { value: true, editor: { type: boolean, tooltip: '向左（方向）' } }
+
+}%
+
+CCProgram sprite-vs %{
+precision highp float;
+  #include <builtin/uniforms/cc-global>
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
+  in vec2 a_uv0;
+
+  out vec4 v_color;
+  out vec4 v_testColor;
+  out vec2 v_uv0;
+
+  vec4 vert () {
+    vec4 pos = vec4(a_position, 1);
+    pos = cc_matViewProj * pos;
+    // if (pos.y > 0.0) {
+    //   pos.y += 10.0;
+    // }
+    v_uv0 = a_texCoord;
+    v_color = a_color;
+    v_testColor = vec4(0, pos.y + 0.5, 0, 1.0);
+    return pos;
+  }
+}%
+
+CCProgram sprite-fs %{
+  precision highp float;
+  #include <builtin/internal/embedded-alpha>
+  #include <builtin/internal/alpha-test>
+  #include <builtin/uniforms/cc-global>
+
+  in vec4 v_color;
+
+  // 自定义属性
+  uniform Properties {
+    float amplitude;        // 振幅
+    float angularVelocity;  // 角速度
+    float frequency;        // 频率
+    float offset;           // 偏距
+    bool toLeft;            // 是否向左
+  };
+
+  in vec2 v_uv0;
+  in vec4 v_testColor;
+  #pragma builtin(local)
+  layout(set = 2, binding = 11) uniform sampler2D cc_spriteTexture;
+
+  float lerp(float a, float b, float t) {
+    return (1.0 - t) * a + t * b;
+  }
+
+  vec4 frag () {
+    // return v_testColor;
+    // return vec4(v_uv0.x, v_uv0.y, 0, 1.0);
+    vec4 o = vec4(1, 1, 1, 1);
+
+    vec4 color = v_color;
+
+    o *= CCSampleWithAlphaSeparated(cc_spriteTexture, v_uv0);
+
+    // 直接丢弃原本就透明的像素
+    if (color.a == 0.0) discard;
+
+    float phaseOffset = 0.0;
+    float yOffset = 0.1;
+    float yfront = 1.0 * amplitude * sin((angularVelocity * v_uv0.x) + ((frequency * cc_time.x) * (toLeft ? 1. : -1.))) + yOffset;
+    float yback = 3.0 * amplitude * sin((0.5 * angularVelocity * (1.0 - v_uv0.x)) + ((frequency * cc_time.x) * (toLeft ? 1. : -1.)) + phaseOffset) + yOffset;
+
+    // 丢弃 y 值以上的像素（左上角为原点 [0.0, 0.0]）
+    // return vec4(abs(y), 0, 0, 1);
+    if (v_uv0.y < yfront && v_uv0.y < yback) discard;
+    if (v_uv0.y < yfront && v_uv0.y > yback) {
+      color.r *= 0.9;
+      color.g *= 0.9;
+      color.b *= 0.9;
+    }
+    // return vec4(y, 0, 0, 1);
+
+    o *= color;
+    ALPHA_TEST(o);
+    return o;
+  }
+}%

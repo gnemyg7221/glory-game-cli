@@ -10,6 +10,10 @@ import com.example.cli.fixture.BuildConfig;
 import com.glory.adsdk.AdSdk;
 import com.glory.adsdk.AdSdkConfig;
 
+/*
+ * appKey / appId / appSecret 只改 glory-game.yaml 的 game 段，然后 glory-game sync。
+ * 隐私协议写在 privacy 段，同样 glory-game sync。未填写时保留本文件里已有的值。
+ */
 public class MyApplication extends MultiDexApplication {
 
     @Override
@@ -19,7 +23,7 @@ public class MyApplication extends MultiDexApplication {
         AdSdkConfig config = new AdSdkConfig();
         config.appKey = BuildConfig.APPLICATION_ID;
         config.versionName = BuildConfig.VERSION_NAME;
-        config.adProviderAppId = "fixture-provider";
+        config.adProviderAppId = "fixture-supplier";
         config.mainGameActivityClass = AppActivity.class;
         config.debug = BuildConfig.DEBUG;
         config.gameCenterAppSecret = BuildConfig.GLORY_GAME_CENTER_APP_SECRET;

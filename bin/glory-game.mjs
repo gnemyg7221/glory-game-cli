@@ -2,14 +2,21 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import YAML from 'yaml';
+import { ensureSdkSubmodule, verifySdkFiles } from '../lib/sdk.mjs';
+import { canReuseExport, recordExport } from '../lib/exports.mjs';
+import { openAndroidStudio } from '../lib/studio.mjs';
 
-const CLI_VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')).version;
+const CLI_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const CLI_VERSION = JSON.parse(readFileSync(join(CLI_ROOT, 'package.json'), 'utf8')).version;
+const JS_ADAPTER_TEMPLATE = join(CLI_ROOT, 'templates', 'js-adapter', 'assets');
+const DEFAULT_OPPO_CONFIG = join('other', 'config', 'apk', 'oppoConfig');
+const STABLE_OUTPUT_NAME = 'android';
 const DEFAULT_CONFIG = 'glory-game.yaml';
 const CONFIG_CANDIDATES = ['glory-game.yaml', 'glory-game.yml', 'glory-game.config.json'];
 const STATE_FILE = join(homedir(), '.config', 'glory-game', 'state.json');
@@ -34,7 +41,7 @@ const VERIFIED_COCOS_38_PROFILE = {
     sdk: {
         submodulePath: 'native/engine/android/glory-adsdk',
         submoduleUrl: 'git@github.com:superWalnuts/OppoGameApkAdSdk.git',
-        commit: 'ccaef3e1ef6821928c850bd1858acafa7ab975f5',
+        commit: '8abc0c887670a0736d577766d3950742e955c756',
         gameCenterAppSecretEnv: 'GLORY_GAME_CENTER_APP_SECRET',
     },
 };
@@ -85,9 +92,15 @@ function usage() {
   glory-game plan --config <path> [--project <path>] [--json]
   glory-game apply --config <path> [--project <path>] [--scaffold] [--dry-run] [--skip-submodule]
   glory-game sync [--project <path>] [--config <path>] [--dry-run]
+  glory-game onboard [--project <path>] [--config <path>] [--oppo-config <path>]
+                     [--package <name>] [--name <桌面名>] [--app-key <key>] [--app-id <id>] [--app-secret <secret>]
+                     [--with-apk] [--mode debug|release] [--dry-run] [--no-open]
+                     [--sdk-source <本机SDK目录>] [--sdk-timeout-seconds <秒>]
+  glory-game open-studio [--project <path>] [--dry-run]
   glory-game cocos-build --config <path> [--project <path>] [--mode debug|release]
                           [--output-name <name>] [--dry-run]
                           默认 release，并开启 packages.native.encrypted。明文调试必须 --mode debug。
+                          默认覆盖当前这一份 build 工程，不再每次新建目录。
   glory-game android-build --config <path> --input <cocos-output> [--mode debug|release]
                             [--dry-run]
   glory-game integrate --config <path> [--project <path>] [--mode debug|release] [--scaffold] [--dry-run]
@@ -98,12 +111,14 @@ function usage() {
   macOS、Cocos Creator 3.8.x、Android，以及已识别项目结构的 glory-adsdk 接入。
 
 快速接入：
-  init-config 问包名。game.appKey / game.appId / game.appSecret 只写 yaml 一次，glory-game sync 灌进宿主。
-  integrate --scaffold 可在暂不填写 SDK 后台/隐私参数时完成 SDK、Cocos 和 Android Debug 编译。
-  该模式生成的 APK 仅用于验证接入和编译，不能发布；以后填写真实参数后重新 integrate 即可。
+  glory-game onboard
+  直接读游戏里已有的 other/config/apk/oppoConfig，写入 glory-game.yaml。不用再手抄 appKey、appId、appSecret。
+  缺 JS 适配层时从 CLI 自带快照补齐；首次导出一次，接入后复用工程，自动打开 Android Studio。
+  加上 --with-apk 才会编译 debug APK。integrate 仍会编 Gradle，接入不要用它。
 
 安全约束：
-  inspect、plan 和所有 --dry-run 不修改游戏源码；CLI 不执行删除。
+  inspect、plan 和所有 --dry-run 不修改游戏源码；CLI 不删除其它构建目录。
+  cocos-build 只覆盖当前记下的那一份 Android 工程。
 `;
 }
 
@@ -480,6 +495,18 @@ function hostValue(config, name) {
     return '';
 }
 
+function gameCenterSecretCheck(config, env = process.env) {
+    const secretEnv = hostValue(config, 'gameCenterAppSecretEnv');
+    const configured = !isMissingConfigValue(hostValue(config, 'appSecret'));
+    const fromEnv = secretEnv && !isMissingConfigValue(env[secretEnv]);
+    return {
+        status: configured || fromEnv ? 'pass' : 'warn',
+        message: configured ? '游戏中心密钥已在配置中填写'
+            : fromEnv ? '游戏中心密钥环境变量 ' + secretEnv + ' 已设置'
+            : '缺少游戏中心密钥：填写 game.appSecret 或环境变量 ' + secretEnv,
+    };
+}
+
 function printConfigStatus(project, configPath, config) {
     const sections = [
         ['基础', [
@@ -511,7 +538,7 @@ function printConfigStatus(project, configPath, config) {
     const hasSecret = !isMissingConfigValue(hostValue(config, 'appSecret')) || Boolean(process.env[hostValue(config, 'gameCenterAppSecretEnv')]);
     console.log(`${hasSecret ? '✓' : '○'} 运行密钥：game.appSecret${hasSecret ? ' 已填写' : ' 尚未填写'}`);
     console.log('○ Release 签名：Debug 阶段不需要');
-    console.log(missingCount ? `\n当前还有 ${missingCount} 个游戏专属字段；可以分批填写，不影响先做 inspect。` : '\n游戏专属配置已齐，可以执行 integrate --dry-run。');
+    console.log(missingCount ? `\n当前还有 ${missingCount} 个游戏专属字段；可以分批填写，不影响先做 inspect。` : '\n游戏专属配置已齐，可以执行 glory-game onboard。');
 }
 
 function creatorExecutable(version, config) {
@@ -639,7 +666,7 @@ async function configureProject(project, options, requestedSection) {
     const config = loaded.value;
     const section = requestedSection || nextConfigSection(config);
     if (!section) {
-        console.log('游戏专属配置已经填齐。下一步运行 glory-game integrate --dry-run');
+        console.log('游戏专属配置已经填齐。下一步运行 glory-game onboard');
         return;
     }
     if (!process.stdin.isTTY || !process.stdout.isTTY) throw new CliError('configure 需要在交互式终端中运行');
@@ -734,13 +761,12 @@ async function initConfig(project, options) {
     mkdirSync(dirname(output), { recursive: true });
     writeFileSync(output, serializeConfig(output, configuredValue), 'utf8');
     rememberProject(project);
+    syncProjectGitignores(project);
     console.log(`已生成配置：${output}`);
     if (!interactive) console.log('包名仍是 REQUIRED，请填写后使用。其余字段已用识别结果或默认值。');
     else {
         console.log('初始化完成。下一步：');
-        console.log('glory-game apply');
-        console.log('glory-game sync          # 把 game 里的 name/icon/appKey/appId/appSecret 写入宿主');
-        console.log('glory-game cocos-build   # 只要新的 Android 工程才需要');
+        console.log('glory-game onboard       # 补密钥和适配层，接入宿主，并覆盖当前 Android 工程');
     }
 }
 
@@ -749,12 +775,27 @@ function gitRepositoryRoot(project) {
     return result.status === 0 ? result.stdout.trim() : null;
 }
 
-function gitIgnoresNative(project) {
-    const result = spawnSync('git', ['check-ignore', '--no-index', '-q', 'native/.glory-cli-probe'], {
+function gitCheckIgnore(project, target) {
+    const result = spawnSync('git', ['check-ignore', '--no-index', '-q', target], {
         cwd: project,
         encoding: 'utf8',
     });
     return result.status === 0;
+}
+
+function gitIgnoresNative(project) {
+    return gitCheckIgnore(project, 'native/engine/android/.glory-cli-probe');
+}
+
+function gitIgnoresBuildCaches(project) {
+    return [
+        'library/.glory-cli-probe',
+        'temp/.glory-cli-probe',
+        'build/.glory-cli-probe',
+        'profiles/.glory-cli-probe',
+        'node_modules/.glory-cli-probe',
+        'native/engine/android/.gradle/.glory-cli-probe',
+    ].every((target) => gitCheckIgnore(project, target));
 }
 
 function parseLocalProperties(path) {
@@ -779,8 +820,62 @@ function listGeneratedProjects(project) {
     return matches.sort((a, b) => b.name.localeCompare(a.name)).map((item) => item.path);
 }
 
+function isStableOutputName(name) {
+    return name === STABLE_OUTPUT_NAME || name.startsWith(`${STABLE_OUTPUT_NAME}-`);
+}
+
+function listStableOutputs(project) {
+    return listGeneratedProjects(project).filter((proj) => isStableOutputName(basename(dirname(proj))));
+}
+
+function currentOutputStatePath(project) {
+    return join(project, 'build', 'glory-cli', 'current-output.txt');
+}
+
+function readPinnedOutputName(project) {
+    const raw = readText(currentOutputStatePath(project)).trim();
+    if (!raw || raw.includes('/') || raw.includes('\\') || raw === '.' || raw === '..') return '';
+    return raw;
+}
+
+function rememberCocosOutputName(project, outputName) {
+    const statePath = currentOutputStatePath(project);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, `${outputName}\n`, 'utf8');
+}
+
+function resolveCocosOutputName(project, options) {
+    if (options['output-name']) {
+        const outputName = String(options['output-name']);
+        if (outputName.includes('/') || outputName.includes('\\') || outputName === '.' || outputName === '..') {
+            throw new CliError('--output-name 只能是单个目录名称');
+        }
+        return outputName;
+    }
+    const pinned = readPinnedOutputName(project);
+    if (pinned && isStableOutputName(pinned)) return pinned;
+    const latest = listStableOutputs(project)[0];
+    if (latest) return basename(dirname(latest));
+    return STABLE_OUTPUT_NAME;
+}
+
+function assertOutputIdle(outputPath) {
+    if (!existsSync(outputPath)) return;
+    const result = spawnSync('ps', ['-ax', '-o', 'command='], { encoding: 'utf8' });
+    if (result.status !== 0 || !result.stdout) return;
+    const hits = result.stdout.split('\n').filter((line) => /gradle|cmake|ninja|aapt2/i.test(line) && line.includes(outputPath));
+    if (hits.length) {
+        throw new CliError(`当前工程正在编译，已停止覆盖：${outputPath}\n- ${hits.slice(0, 3).join('\n- ')}`);
+    }
+}
+
 function findGeneratedProject(project) {
-    return listGeneratedProjects(project)[0] || null;
+    const pinned = readPinnedOutputName(project);
+    if (pinned && isStableOutputName(pinned)) {
+        const candidate = join(project, 'build', pinned, 'proj');
+        if (existsSync(join(candidate, 'gradlew'))) return candidate;
+    }
+    return listStableOutputs(project)[0] || null;
 }
 
 function resolveAndroidSdk(project, config, generatedProject) {
@@ -927,11 +1022,16 @@ function inspectProject(project, config) {
     const nativeRoot = join(project, 'native', 'engine', 'android');
     const nativeExists = existsSync(nativeRoot);
     const nativeIgnored = gitIgnoresNative(project);
+    const cachesIgnored = gitIgnoresBuildCaches(project);
     addCheck(
         checks,
         'source.native-tracked',
-        nativeIgnored ? 'warn' : 'pass',
-        nativeIgnored ? '当前 .gitignore 会忽略 native/，生成的 Android 模板无法纳入版本控制' : 'native/ 未被 Git 忽略',
+        !nativeIgnored && cachesIgnored ? 'pass' : 'warn',
+        nativeIgnored
+            ? '当前 .gitignore 会忽略 native/engine/android，生成的 Android 模板无法纳入版本控制'
+            : (cachesIgnored
+                ? '构建缓存已忽略，Android 模板可以纳入版本控制'
+                : '当前 .gitignore 还没忽略 library、temp、build、profiles、node_modules 或 Gradle 缓存'),
     );
     addCheck(
         checks,
@@ -988,6 +1088,14 @@ function inspectProject(project, config) {
                 { expected: config.sdk.commit, actual: actualCommit },
             );
         }
+        if (existsSync(join(sdk, '.git')) && config?.sdk?.commit) {
+            try {
+                verifySdkFiles(sdk, config.sdk.commit);
+                addCheck(checks, 'glory.sdk-files', 'pass', 'SDK LFS 二进制完整');
+            } catch (error) {
+                addCheck(checks, 'glory.sdk-files', 'warn', error.message);
+            }
+        }
         addCheck(checks, 'glory.manifest', includesAll(manifest, ['com.cocos.game.MyApplication', 'com.glory.adsdk.launch.GloryAdLaunchActivity']) ? 'pass' : 'warn', 'Manifest 的 Application/Launcher 接入');
         addCheck(checks, 'glory.app-gradle', includesAll(appGradle, ["project(':glory-adsdk')", 'multiDexEnabled true']) ? 'pass' : 'warn', 'app Gradle 的 SDK/MultiDex 接入');
         addCheck(checks, 'glory.app-activity', includesAll(appActivity, ['AdSdk.onMainActivityReady', 'AdSdk.onBackPressed']) ? 'pass' : 'warn', 'AppActivity 的 SDK 生命周期接入');
@@ -1018,13 +1126,8 @@ function inspectProject(project, config) {
                     && applicationContent.includes(`config.skipPrivacyBeforeTime = "${config.privacy.skipBeforeTime}";`);
                 addCheck(checks, 'config.privacy', privacyMatches ? 'pass' : 'warn', privacyMatches ? '隐私地址和时间策略与配置一致' : '隐私地址或时间策略与配置不一致');
             }
-            const secretEnv = hostValue(config, 'gameCenterAppSecretEnv');
-            addCheck(
-                checks,
-                'config.game-center-secret',
-                secretEnv && process.env[secretEnv] ? 'pass' : 'warn',
-                secretEnv && process.env[secretEnv] ? `游戏中心密钥环境变量 ${secretEnv} 已设置` : `游戏中心密钥环境变量 ${secretEnv || '(未配置)'} 未设置`,
-            );
+            const secret = gameCenterSecretCheck(config);
+            addCheck(checks, 'config.game-center-secret', secret.status, secret.message);
         }
     }
 
@@ -1079,8 +1182,8 @@ function buildPlan(project, config, inspection) {
     steps.push({
         id: 'track-native',
         status: done('source.native-tracked') ? 'done' : 'change',
-        description: '调整 .gitignore，使 native/ Android 模板进入版本控制',
-        files: [path('.gitignore')],
+        description: '补齐 .gitignore：忽略构建缓存，并让 Android 模板可以入库',
+        files: [path('.gitignore'), path('native', 'engine', 'android', '.gitignore')],
     });
     steps.push({
         id: 'cocos-bootstrap',
@@ -1634,10 +1737,21 @@ function transformProguardRules(content) {
     return `${content.trimEnd()}${rules}`;
 }
 
-function createMyApplication(config) {
+function existingJavaString(content, pattern) {
+    const match = String(content || '').match(pattern);
+    return match ? match[1] : '';
+}
+
+function createMyApplication(config, existing = '') {
     const providerAppId = escapeJava(hostValue(config, 'appId') || '');
-    const skipPrivacyBeforeTime = escapeJava(config.privacy?.skipBeforeTime || '');
-    const policyUrl = escapeJava(config.privacy?.policyUrl || '');
+    const configuredSkip = config.privacy?.skipBeforeTime;
+    const configuredPolicy = config.privacy?.policyUrl;
+    const skipPrivacyBeforeTime = escapeJava(!isMissingConfigValue(configuredSkip)
+        ? configuredSkip
+        : existingJavaString(existing, /config\.skipPrivacyBeforeTime\s*=\s*"([^"]*)"/));
+    const policyUrl = escapeJava(!isMissingConfigValue(configuredPolicy)
+        ? configuredPolicy
+        : existingJavaString(existing, /privacyConfig\.privacyPolicyUrl\s*=\s*"([^"]*)"/));
     return `// glory-game-managed:v1
 package com.cocos.game;
 
@@ -1652,7 +1766,7 @@ import com.glory.adsdk.AdSdkConfig;
 
 /*
  * appKey / appId / appSecret 只改 glory-game.yaml 的 game 段，然后 glory-game sync。
- * 隐私协议仍改本文件。
+ * 隐私协议写在 privacy 段，同样 glory-game sync。未填写时保留本文件里已有的值。
  */
 public class MyApplication extends MultiDexApplication {
 
@@ -1888,6 +2002,7 @@ function syncYamlHost(project, config, dryRun = false, extraResRoots = []) {
     const changes = [
         ...applyAppName(project, config, dryRun),
         ...applyHostCredentials(project, config, dryRun),
+        ...applyPrivacy(project, config, dryRun),
     ];
     const iconFiles = applyGameIcon(project, config, extraRes, dryRun);
     const iconRoots = new Map();
@@ -1938,17 +2053,101 @@ function createSupplierConfig(config) {
     }, null, 2)}\n`;
 }
 
+const PROJECT_GITIGNORE = `# glory-game-managed:gitignore
+# Cocos Creator 本地缓存和构建产物
+library/
+temp/
+local/
+build/
+profiles/
+
+# 本地分析日志
+*.log
+/logs/
+
+# 本地 Gradle 缓存
+.gradle/
+
+# 只跟踪 Android 原生模板和引擎公共文件
+/native/*
+!/native/engine/
+/native/engine/*
+!/native/engine/android/
+!/native/engine/common/
+
+# 依赖和编辑器
+node_modules/
+.vscode/
+.idea/
+.specstory/
+.cursorindexingignore
+
+# 安装包不入库
+*.apk
+`;
+
+const ANDROID_MODULE_GITIGNORE = `# glory-game-managed:gitignore
+# 模块内 Gradle 缓存
+.gradle/
+app/.gradle/
+instantapp/.gradle/
+glory-adsdk/.gradle/
+
+# 本机 Android SDK 路径，不入库
+local.properties
+
+# 本地二进制依赖
+app/libs/
+`;
+
+function gitignorePatterns(content) {
+    return new Set(
+        content.split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line && !line.startsWith('#')),
+    );
+}
+
+function commentBareNativeIgnore(content) {
+    return content.split(/\r?\n/).map((line) => (
+        /^\s*\/?native\/?\s*$/.test(line)
+            ? '# native/ 由 glory-game 管理并纳入版本控制'
+            : line
+    )).join('\n');
+}
+
+function ensureGitignore(content, template) {
+    const normalized = commentBareNativeIgnore(content).replace(/\r\n/g, '\n');
+    if (!normalized.trim()) return template;
+    const missing = [...gitignorePatterns(template)].filter((pattern) => !gitignorePatterns(normalized).has(pattern));
+    if (!missing.length) return normalized.endsWith('\n') ? normalized : `${normalized}\n`;
+    const prefix = normalized.endsWith('\n') ? normalized : `${normalized}\n`;
+    return `${prefix}\n# glory-game-managed:gitignore\n${missing.join('\n')}\n`;
+}
+
 function transformProjectGitignore(content) {
-    const lines = content.split(/\r?\n/);
-    let changed = false;
-    const next = lines.map((line) => {
-        if (/^\s*\/?native\/?\s*$/.test(line)) {
-            changed = true;
-            return '# native/ 由 glory-game 管理并纳入版本控制';
-        }
-        return line;
-    });
-    return changed ? next.join('\n') : content;
+    return ensureGitignore(content, PROJECT_GITIGNORE);
+}
+
+function transformAndroidGitignore(content) {
+    return ensureGitignore(content, ANDROID_MODULE_GITIGNORE);
+}
+
+function syncProjectGitignores(project) {
+    const targets = [
+        [join(project, '.gitignore'), transformProjectGitignore(readText(join(project, '.gitignore'))), '.gitignore'],
+    ];
+    if (existsSync(join(project, 'native', 'engine', 'android', 'app'))) {
+        const androidIgnore = join(project, 'native', 'engine', 'android', '.gitignore');
+        targets.push([androidIgnore, transformAndroidGitignore(readText(androidIgnore)), 'native/engine/android/.gitignore']);
+    }
+    for (const [path, content, label] of targets) {
+        const before = readText(path);
+        if (before === content) continue;
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, content, 'utf8');
+        console.log(`${before ? '已更新' : '已生成'} ${label}`);
+    }
 }
 
 function addFileChange(changes, path, content, description) {
@@ -1995,6 +2194,7 @@ function planIntegrationChanges(project, config) {
     }
     const files = {
         gitignore: join(project, '.gitignore'),
+        androidGitignore: join(nativeRoot, '.gitignore'),
         rootGradle: join(nativeRoot, 'build.gradle'),
         appGradle: join(nativeRoot, 'app', 'build.gradle'),
         manifest: join(nativeRoot, 'app', 'AndroidManifest.xml'),
@@ -2018,13 +2218,14 @@ function planIntegrationChanges(project, config) {
     }
 
     const changes = [];
-    addFileChange(changes, files.gitignore, transformProjectGitignore(readText(files.gitignore)), '让 native/ 进入版本控制');
+    addFileChange(changes, files.gitignore, transformProjectGitignore(readText(files.gitignore)), '忽略构建缓存，并保留 Android 模板可入库');
+    addFileChange(changes, files.androidGitignore, transformAndroidGitignore(readText(files.androidGitignore)), '忽略 Android 模块里的 Gradle 缓存、本机 SDK 路径和本地二进制依赖');
     addFileChange(changes, files.rootGradle, transformRootBuildGradle(readText(files.rootGradle), config), '配置 AGP 和 SDK Maven 仓库');
     addFileChange(changes, files.appGradle, transformAppBuildGradle(readText(files.appGradle), config), '配置版本、MultiDex、SDK 依赖和安全密钥注入');
     addFileChange(changes, files.manifest, transformManifest(readText(files.manifest), config), '配置 Application、游戏中心参数和 SDK Launcher');
     addFileChange(changes, files.appActivity, transformAppActivity(readText(files.appActivity)), '接入 SDK Activity 生命周期');
     addFileChange(changes, files.proguard, transformProguardRules(readText(files.proguard)), '补齐 OPPO/GameCenter/R8 混淆保护规则');
-    addFileChange(changes, files.application, createMyApplication(config), '生成 MyApplication SDK 初始化');
+    addFileChange(changes, files.application, createMyApplication(config, readText(files.application)), '生成 MyApplication SDK 初始化');
     addFileChange(changes, files.supplier, createSupplierConfig(config), '生成 supplierconfig.json');
     addFileChange(changes, files.settings, createCocosSettings(project, config), '生成包含 glory-adsdk 的 Cocos 模块配置');
     addFileChange(changes, files.mainDex, '# glory-game-managed:v1\n-keep class com.cocos.game.MyApplication { *; }\n-keep class androidx.multidex.** { *; }\n', '生成 MultiDex 主 dex 保留规则');
@@ -2058,90 +2259,6 @@ function writeIntegrationChanges(project, changes) {
     return changes.some((change) => change.before) ? backupRoot : null;
 }
 
-function runGit(args, cwd, label) {
-    const result = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    if (result.status !== 0) {
-        throw new CliError(`${label}失败：${(result.stderr || result.stdout || '').trim()}`);
-    }
-    return (result.stdout || '').trim();
-}
-
-function gitText(args, cwd) {
-    const result = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    if (result.status !== 0) return '';
-    return (result.stdout || '').trim();
-}
-
-function remoteBranchNames(lines) {
-    return lines.split('\n').map((line) => line.trim().replace(/^\*\s*/, '').replace(/^origin\//, ''))
-        .filter((name) => name && name !== 'HEAD' && !name.includes('->'));
-}
-
-function selectSdkBranch(sdkPath, commit) {
-    const exact = remoteBranchNames(gitText(['for-each-ref', '--format=%(refname:short)', '--points-at', commit, 'refs/remotes/origin'], sdkPath));
-    const listed = exact.length
-        ? exact
-        : remoteBranchNames(gitText(['branch', '-r', '--contains', commit], sdkPath));
-    const ranked = listed.map((name) => {
-        const ahead = Number(gitText(['rev-list', '--count', `${commit}..origin/${name}`], sdkPath));
-        return { name, ahead: Number.isFinite(ahead) ? ahead : 999999 };
-    }).sort((a, b) => a.ahead - b.ahead || a.name.localeCompare(b.name));
-    return ranked[0] || null;
-}
-
-function checkoutPinnedSdk(sdkPath, expectedCommit) {
-    const fetch = spawnSync('git', ['fetch', 'origin', '--prune'], { cwd: sdkPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    if (fetch.status !== 0) {
-        console.warn(`无法更新 SDK 远程分支，按本地记录固定提交：${(fetch.stderr || fetch.stdout || '').trim()}`);
-    }
-    const selected = selectSdkBranch(sdkPath, expectedCommit);
-    if (!selected) {
-        runGit(['checkout', '--detach', expectedCommit], sdkPath, '固定 SDK commit');
-        console.log(`SDK commit：${expectedCommit}（没有对应分支）`);
-        return;
-    }
-    if (selected.ahead === 0) {
-        runGit(['checkout', '-B', selected.name, `origin/${selected.name}`], sdkPath, '切到 SDK 分支');
-        console.log(`SDK 分支：${selected.name}`);
-        console.log(`SDK commit：${expectedCommit}`);
-        return;
-    }
-    runGit(['checkout', '-B', selected.name, expectedCommit], sdkPath, '按钉死的提交挂上 SDK 分支');
-    console.log(`SDK 分支：${selected.name}（远程最新超前 ${selected.ahead} 个提交，HEAD 仍是 yaml 钉死的 ${expectedCommit}）`);
-}
-
-function ensureSdkSubmodule(project, config) {
-    const repositoryRoot = gitRepositoryRoot(project);
-    if (!repositoryRoot) throw new CliError('目标工程不在 Git 仓库中，无法添加 SDK 子模块');
-    const sdkPath = resolve(project, config.sdk.submodulePath);
-    if (sdkPath === project || !sdkPath.startsWith(`${project}${sep}`)) {
-        throw new CliError(`sdk.submodulePath 必须位于 Cocos 工程内部：${config.sdk.submodulePath}`);
-    }
-    const repositoryRelativePath = relative(repositoryRoot, sdkPath);
-    if (repositoryRelativePath.startsWith(`..${sep}`) || isAbsolute(repositoryRelativePath)) {
-        throw new CliError(`SDK 路径不在 Git 仓库中：${sdkPath}`);
-    }
-    if (!existsSync(sdkPath)) {
-        console.log(`添加 SDK 子模块：${config.sdk.submoduleUrl} -> ${repositoryRelativePath}`);
-        runGit(['submodule', 'add', config.sdk.submoduleUrl, repositoryRelativePath], repositoryRoot, '添加 SDK 子模块');
-    }
-    const actualUrl = runGit(['config', '--get', 'remote.origin.url'], sdkPath, '读取 SDK remote');
-    if (actualUrl !== config.sdk.submoduleUrl) {
-        throw new CliError(`SDK remote 不一致：配置为 ${config.sdk.submoduleUrl}，实际为 ${actualUrl}`);
-    }
-    const expectedCommit = String(config.sdk.commit || '');
-    if (!/^[0-9a-f]{40}$/i.test(expectedCommit)) {
-        throw new CliError('sdk.commit 必须是完整的 40 位 Git commit，不能使用浮动分支');
-    }
-    const status = runGit(['status', '--porcelain'], sdkPath, '检查 SDK 工作区');
-    if (status) throw new CliError(`SDK 子模块存在未提交修改，停止切换版本：\n${status}`);
-    const actualCommit = runGit(['rev-parse', 'HEAD'], sdkPath, '读取 SDK commit');
-    const hasCommit = actualCommit === expectedCommit
-        || spawnSync('git', ['cat-file', '-e', `${expectedCommit}^{commit}`], { cwd: sdkPath }).status === 0;
-    if (!hasCommit) runGit(['fetch', 'origin', expectedCommit], sdkPath, '获取指定 SDK commit');
-    checkoutPinnedSdk(sdkPath, expectedCommit);
-}
-
 function requiredIntegrationFailures(inspection) {
     const requiredIds = [
         'source.native-tracked',
@@ -2157,16 +2274,44 @@ function requiredIntegrationFailures(inspection) {
         'glory.supplier-config',
         'glory.cocos-settings',
         'config.game-identity',
-        'config.provider-app-id',
-        'config.supplier-app-id',
-        'config.game-center-app-key',
+        'config.app-id',
+        'config.app-key',
+        'glory.sdk-files',
         'config.privacy',
     ];
     return inspection.checks.filter((check) => requiredIds.includes(check.id) && check.status !== 'pass');
 }
 
+function applyPrivacy(project, config, dryRun = false) {
+    const policyUrl = config.privacy?.policyUrl;
+    const skipBeforeTime = config.privacy?.skipBeforeTime;
+    if (isMissingConfigValue(policyUrl) && isMissingConfigValue(skipBeforeTime)) return [];
+    const application = join(project, 'native', 'engine', 'android', 'app', 'src', 'com', 'cocos', 'game', 'MyApplication.java');
+    if (!existsSync(application)) return [];
+    const before = readText(application);
+    let after = before;
+    if (!isMissingConfigValue(skipBeforeTime)) {
+        after = after.replace(
+            /config\.skipPrivacyBeforeTime\s*=\s*"[^"]*"/,
+            `config.skipPrivacyBeforeTime = "${escapeJava(skipBeforeTime)}"`,
+        );
+    }
+    if (!isMissingConfigValue(policyUrl)) {
+        after = after.replace(
+            /privacyConfig\.privacyPolicyUrl\s*=\s*"[^"]*"/,
+            `privacyConfig.privacyPolicyUrl = "${escapeJava(policyUrl)}"`,
+        );
+    }
+    if (after === before) return [];
+    if (!dryRun) writeFileSync(application, after, 'utf8');
+    return [{ path: application, description: '隐私协议 → MyApplication' }];
+}
+
 function applyIntegration(project, config, options = {}) {
     validateApplyConfig(config);
+    if (!detectJsAdapterLayout(project)) {
+        throw new CliError('未识别到 APK JS 广告适配层（assets/AdSdk/script/platform/Native）。运行 glory-game onboard 会从 CLI 自带快照补齐。');
+    }
     const plan = planIntegrationChanges(project, config);
     const dryRun = Boolean(options['dry-run']);
     printIntegrationChanges(plan, dryRun);
@@ -2175,10 +2320,10 @@ function applyIntegration(project, config, options = {}) {
         return { plan, inspection: inspectProject(project, config) };
     }
     const backupRoot = writeIntegrationChanges(project, plan.changes);
-    if (!options['skip-submodule']) ensureSdkSubmodule(project, config);
+    if (!options['skip-submodule']) ensureSdkSubmodule(project, config, options);
     const inspection = inspectProject(project, config);
     const failures = requiredIntegrationFailures(inspection)
-        .filter((check) => !(options['skip-submodule'] && check.id === 'glory.sdk-module'));
+        .filter((check) => !(options['skip-submodule'] && ['glory.sdk-module', 'glory.sdk-commit', 'glory.sdk-files'].includes(check.id)));
     if (backupRoot) console.log(`原文件备份：${backupRoot}`);
     if (failures.length) {
         throw new CliError(`接入文件已写入，但复检仍有 ${failures.length} 项未通过：\n- ${failures.map((item) => item.message).join('\n- ')}`);
@@ -2187,8 +2332,72 @@ function applyIntegration(project, config, options = {}) {
     return { plan, inspection };
 }
 
+function assertGeneratedGitignore() {
+    const root = transformProjectGitignore('');
+    if (root !== transformProjectGitignore(root)) throw new CliError('根 .gitignore 生成不幂等');
+    const partial = transformProjectGitignore('build/\n');
+    if (partial !== transformProjectGitignore(partial) || !partial.startsWith('build/\n') || !partial.includes('library/')) {
+        throw new CliError('已有 .gitignore 补齐后不幂等，或改写了原有规则');
+    }
+    const android = transformAndroidGitignore('');
+    if (android !== transformAndroidGitignore(android)) throw new CliError('Android .gitignore 生成不幂等');
+    for (const token of ['PourWine', 'gradle-wrapper.jar', 'libs/*', 'glory-adsdk-vivo']) {
+        if (root.includes(token) || android.includes(token)) {
+            throw new CliError(`生成的 .gitignore 带入了其他项目的专用规则：${token}`);
+        }
+    }
+    if (!root.includes('!/native/engine/android/') || !root.includes('!/native/engine/common/')) {
+        throw new CliError('根 .gitignore 没有保留 Android 模板和 common');
+    }
+    if (!android.includes('local.properties') || !android.includes('app/libs/')) {
+        throw new CliError('Android .gitignore 缺少本机路径或本地二进制依赖规则');
+    }
+    const probe = mkdtempSync(join(tmpdir(), 'glory-gitignore-'));
+    try {
+        writeFileSync(join(probe, '.gitignore'), root);
+        const init = spawnSync('git', ['init', '-q'], { cwd: probe, encoding: 'utf8' });
+        if (init.status !== 0) throw new CliError(`无法创建临时 Git 仓库验证 .gitignore：${(init.stderr || '').trim()}`);
+        const ignored = (target) => spawnSync('git', ['check-ignore', '--no-index', '-q', target], {
+            cwd: probe,
+            encoding: 'utf8',
+        }).status === 0;
+        for (const target of [
+            'library/x',
+            'temp/x',
+            'local/x',
+            'build/x',
+            'profiles/x',
+            'node_modules/x',
+            '.specstory/x',
+            'native/engine/android/.gradle/x',
+            'native/engine/android/app/release/game-release.apk',
+            'native/ios/x',
+        ]) {
+            if (!ignored(target)) throw new CliError(`.gitignore 应忽略 ${target}`);
+        }
+        for (const target of [
+            'native/engine/android/app/AndroidManifest.xml',
+            'native/engine/android/gradle/wrapper/gradle-wrapper.jar',
+            'native/engine/common/Classes/Game.cpp',
+            'settings/v2/packages/project.json',
+            'glory-game.yaml',
+        ]) {
+            if (ignored(target)) throw new CliError(`.gitignore 不应忽略 ${target}`);
+        }
+    } finally {
+        console.log('Git 忽略规则测试目录已保留：' + probe);
+    }
+}
+
 function selfTest(project, config) {
     validateApplyConfig(config);
+    assertGeneratedGitignore();
+    const adapterSentinel = join(JS_ADAPTER_TEMPLATE, 'AdSdk', 'script', 'platform', 'Native', 'NativeOpenAPI.ts');
+    const adapterDest = join(project, 'assets', relative(JS_ADAPTER_TEMPLATE, adapterSentinel));
+    if (!existsSync(adapterSentinel) || !adapterDest.endsWith(`${sep}assets${sep}AdSdk${sep}script${sep}platform${sep}Native${sep}NativeOpenAPI.ts`)) {
+        throw new CliError(`JS 适配层快照路径不正确：${adapterDest}`);
+    }
+    console.log('✓ JS 适配层快照会拷进 assets/AdSdk');
     const creator = creatorExecutable(config.cocos.version, config);
     if (!creator.path) throw new CliError(`未找到 Cocos Creator ${config.cocos.version}`);
     const contents = dirname(dirname(creator.path));
@@ -2226,7 +2435,7 @@ function selfTest(project, config) {
     if (inspection.nativeExists && readText(managedApplication).includes('glory-game-managed:v1')) {
         const plan = planIntegrationChanges(project, config);
         if (plan.changes.length) {
-            throw new CliError(`已管理工程的幂等测试失败，仍有 ${plan.changes.length} 个文件变化`);
+            throw new CliError(`已管理工程的幂等测试失败，仍有 ${plan.changes.length} 个文件变化：\n- ${plan.changes.map((change) => change.path).join('\n- ')}`);
         }
         console.log('✓ 已管理 Android 工程重复 apply 为零文件变化');
     }
@@ -2370,10 +2579,7 @@ async function cocosBuild(project, config, options) {
     assertRequiredToolchain(inspection, config, 'cocos-build');
     const modeWasExplicit = options.mode != null && String(options.mode) !== '';
     const mode = resolveCocosBuildMode(options, 'release');
-    const outputName = String(options['output-name'] || `android-${timestamp()}`);
-    if (outputName.includes('/') || outputName.includes('\\') || outputName === '.' || outputName === '..') {
-        throw new CliError('--output-name 只能是单个目录名称');
-    }
+    const outputName = resolveCocosOutputName(project, options);
     const toolchain = {
         sdkPath: inspection.androidSdk,
         ndkPath: sdkComponentPath(inspection.androidSdk, 'ndk', config.android?.ndkVersion),
@@ -2395,7 +2601,8 @@ async function cocosBuild(project, config, options) {
     console.log(`模式：${mode}${modeWasExplicit ? '' : '（默认 release）'}`);
     console.log(`原生 JS 加密：${nativeOptions.encrypted ? '开启 packages.native.encrypted=true' : '关闭（明文 .js）'}`);
     printCocosBuildBanner(mode, nativeOptions.encrypted, modeWasExplicit);
-    console.log(`输出：${outputPath}`);
+    const overwriteOutput = existsSync(outputPath);
+    console.log(`${overwriteOutput ? '覆盖当前工程' : '新建工程'}：${outputPath}`);
     console.log(`启动场景：${startScene.path}（${startScene.reason}）`);
     console.log(`桌面名称：${config.game.name}`);
     const icon = hostValue(config, 'icon');
@@ -2415,9 +2622,8 @@ async function cocosBuild(project, config, options) {
         console.log('\nDRY RUN：未创建配置、未启动 Creator、未修改工程。');
         return { outputPath, buildConfig, dryRun: true };
     }
-    if (existsSync(outputPath)) {
-        throw new CliError(`输出目录已存在，为避免覆盖已停止：${outputPath}`);
-    }
+    assertOutputIdle(outputPath);
+    if (!options['output-name']) rememberCocosOutputName(project, outputName);
     mkdirSync(dirname(configPath), { recursive: true });
     mkdirSync(dirname(logPath), { recursive: true });
     mkdirSync(buildRoot, { recursive: true });
@@ -2479,6 +2685,7 @@ async function cocosBuild(project, config, options) {
             }
         }
     }
+    recordExport(project, outputPath, { ...buildConfig, fingerprintKey: config.cocos?.xxteaKey || '' });
     return { outputPath, buildConfig, dryRun: false };
 }
 
@@ -2559,6 +2766,199 @@ async function androidBuild(project, config, options) {
     return { apks, reports };
 }
 
+function parseIdentityFile(text) {
+    const data = {};
+    for (const line of String(text || '').split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const index = trimmed.indexOf(':');
+        if (index <= 0) continue;
+        data[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
+    }
+    return data;
+}
+
+function collectGameIdentity(project, options) {
+    const explicit = options['oppo-config'];
+    const candidate = explicit
+        ? (isAbsolute(String(explicit)) ? resolve(String(explicit)) : resolve(project, String(explicit)))
+        : join(project, DEFAULT_OPPO_CONFIG);
+    let fromFile = {};
+    let filePath = null;
+    if (existsSync(candidate) && statSync(candidate).isFile()) {
+        filePath = candidate;
+        const raw = parseIdentityFile(readText(candidate));
+        fromFile = {
+            name: raw.name || '',
+            packageName: raw.packageName || '',
+            appKey: raw.appKey || '',
+            appId: raw.appid || raw.appId || '',
+            appSecret: raw.appSecret || '',
+        };
+    } else if (explicit) {
+        throw new CliError(`找不到 oppoConfig：${candidate}`);
+    }
+    const identity = { ...fromFile };
+    if (options.package) identity.packageName = String(options.package);
+    if (options.name) identity.name = String(options.name);
+    if (options['app-key']) identity.appKey = String(options['app-key']);
+    if (options['app-id']) identity.appId = String(options['app-id']);
+    if (options['app-secret']) identity.appSecret = String(options['app-secret']);
+    return { filePath, identity };
+}
+
+function assignIdentity(config, identity) {
+    config.game ||= {};
+    const changes = [];
+    const fields = ['name', 'packageName', 'appKey', 'appId', 'appSecret'];
+    for (const key of fields) {
+        const value = identity[key];
+        if (isMissingConfigValue(value)) continue;
+        if (String(config.game[key] || '') === String(value)) continue;
+        changes.push(key === 'appSecret' ? 'appSecret → (已填写)' : `${key} → ${value}`);
+        config.game[key] = value;
+    }
+    return changes;
+}
+
+async function ensureStartScene(project, config, interactive) {
+    config.cocos ||= {};
+    if (!isMissingConfigValue(config.cocos.startScene)) {
+        const match = matchScene(listProjectScenes(project), config.cocos.startScene);
+        if (!match) throw new CliError(`cocos.startScene 在工程里不存在：${config.cocos.startScene}`);
+        return false;
+    }
+    const detected = detectStartScene(project);
+    if (detected?.path) {
+        config.cocos.startScene = detected.path;
+        console.log(`启动场景已识别：${detected.path}（${detected.reason}）`);
+        return true;
+    }
+    if (interactive && process.stdin.isTTY && process.stdout.isTTY) {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+            config.cocos.startScene = await askStartScene(rl, project);
+        } finally {
+            rl.close();
+        }
+        return true;
+    }
+    throw new CliError('无法识别启动场景。请在 glory-game.yaml 里写 cocos.startScene，例如 assets/Load/Load.scene');
+}
+
+function ensureJsAdapter(project, dryRun) {
+    const layout = detectJsAdapterLayout(project);
+    if (layout) {
+        console.log(`JS 广告适配层已存在：${layout.name}`);
+        return;
+    }
+    if (!existsSync(JS_ADAPTER_TEMPLATE)) throw new CliError(`CLI 缺少 JS 适配层快照：${JS_ADAPTER_TEMPLATE}`);
+    const pending = findFiles(JS_ADAPTER_TEMPLATE, (file) => !basename(file).startsWith('.'))
+        .map((file) => ({ file, dest: join(project, 'assets', relative(JS_ADAPTER_TEMPLATE, file)) }))
+        .filter((item) => !existsSync(item.dest));
+    if (!pending.length) throw new CliError('JS 适配层快照没有可补齐的文件');
+    console.log(`${dryRun ? '将补齐' : '补齐'} JS 广告适配层：${pending.length} 个文件`);
+    if (dryRun) return;
+    for (const item of pending) {
+        mkdirSync(dirname(item.dest), { recursive: true });
+        cpSync(item.file, item.dest);
+    }
+    if (!detectJsAdapterLayout(project)) {
+        throw new CliError('已拷贝 JS 适配层快照，但仍未识别到 NativeOpenAPI.ts 与 NativeHybridAdManager.ts');
+    }
+}
+
+function saveOnboardConfig(project, configPath, config, existed, changed) {
+    if (existed && changed) {
+        const backup = join(project, 'build', 'glory-cli', 'backups', timestamp(), basename(configPath));
+        mkdirSync(dirname(backup), { recursive: true });
+        writeFileSync(backup, readFileSync(configPath, 'utf8'), 'utf8');
+    }
+    if (!existed || changed) {
+        mkdirSync(dirname(configPath), { recursive: true });
+        writeFileSync(configPath, serializeConfig(configPath, config), 'utf8');
+        if (!existed) syncProjectGitignores(project);
+    }
+    rememberProject(project);
+}
+
+function plannedExport(project, config, options, inspection) {
+    const outputName = resolveCocosOutputName(project, options);
+    const plan = createCocosBuildConfig(project, config, resolveCocosBuildMode(options, 'release'), outputName, {
+        sdkPath: inspection.androidSdk,
+        ndkPath: sdkComponentPath(inspection.androidSdk, 'ndk', config.android?.ndkVersion),
+        javaHome: inspection.java.path,
+    });
+    return { ...plan, fingerprintConfig: { ...plan.buildConfig, fingerprintKey: config.cocos?.xxteaKey || '' } };
+}
+
+async function onboard(project, options) {
+    const dryRun = Boolean(options['dry-run']);
+    const { filePath, identity } = collectGameIdentity(project, options);
+    const configPath = resolveConfigPath(project, options, false) || join(project, DEFAULT_CONFIG);
+    const existed = existsSync(configPath);
+    const config = existed ? readConfigDocument(configPath) : initialConfig(project);
+    if (filePath) console.log('读取 OPPO 配置：' + filePath);
+    const identityChanges = assignIdentity(config, identity);
+    const sceneChanged = await ensureStartScene(project, config, !options['non-interactive']);
+    if (isMissingConfigValue(config.game?.packageName)) throw new CliError('缺少包名：请提供 other/config/apk/oppoConfig。');
+    validateConfig(config);
+    const inspection = inspectProject(project, config);
+    assertRequiredToolchain(inspection, config, 'onboard');
+    if (!existed) console.log((dryRun ? '将生成配置：' : '生成配置：') + configPath);
+    if (identityChanges.length) {
+        console.log((dryRun ? '将写入' : '写入') + ' glory-game.yaml：');
+        for (const line of identityChanges) console.log('  ' + line);
+    }
+    if (!dryRun) saveOnboardConfig(project, configPath, config, existed, identityChanges.length > 0 || sceneChanged);
+    const adapterMissing = !detectJsAdapterLayout(project);
+    ensureJsAdapter(project, dryRun);
+    if (dryRun) {
+        if (inspection.nativeExists && !adapterMissing) {
+            applyIntegration(project, createScaffoldConfig(project, config), { ...options, 'dry-run': true });
+            printYamlHostChanges(syncYamlHost(project, config, true), true);
+        } else {
+            console.log('将生成缺少的 Android 模板，并接入宿主和 SDK。首次导出后直接同步宿主，无需再次导出。');
+        }
+        const plan = plannedExport(project, config, options, inspection);
+        console.log((canReuseExport(project, plan.outputPath, plan.fingerprintConfig) ? '将复用已有工程：' : '将由 Creator 导出工程：') + plan.outputPath);
+        console.log('SDK 优先复用本机同版本源码和 LFS，缺少时才下载，并显示进度及超时。');
+        if (options['with-apk']) console.log('然后编译并验证 APK。');
+        if (!options['no-open']) console.log('最后自动用 Android Studio 打开：' + join(plan.outputPath, 'proj'));
+        console.log('DRY RUN：未修改工程、未构建、未访问 SDK remote、未打开应用。');
+        return;
+    }
+    applyCocosPortability(project, false);
+    let bootstrapResult = null;
+    if (!inspection.nativeExists) {
+        console.log('还没有 Android 模板，先由 Creator 导出一次。');
+        bootstrapResult = await cocosBuild(project, config, options);
+    }
+    console.log('应用 glory-adsdk 宿主接入');
+    applyIntegration(project, createScaffoldConfig(project, config), options);
+    const plan = bootstrapResult ? {
+        outputPath: bootstrapResult.outputPath,
+        fingerprintConfig: { ...bootstrapResult.buildConfig, fingerprintKey: config.cocos?.xxteaKey || '' },
+    } : plannedExport(project, config, options, inspection);
+    let outputPath = plan.outputPath;
+    if (canReuseExport(project, outputPath, plan.fingerprintConfig)) {
+        console.log('游戏资源和构建配置未变化，复用 Android 工程，跳过重复 Creator 导出。');
+        assertOutputIdle(outputPath);
+        applyGloryConfigToGeneratedProject(join(outputPath, 'proj'), config, project, inspection.java.path);
+        printYamlHostChanges(syncYamlHost(project, config, false, [join(outputPath, 'proj', 'res')]), false);
+    } else {
+        const result = await cocosBuild(project, config, options);
+        outputPath = result.outputPath;
+    }
+    const proj = join(outputPath, 'proj');
+    console.log('接入完成。Android Studio 工程：' + proj);
+    if (options['with-apk']) {
+        const mode = options.mode ? resolveCocosBuildMode(options, 'debug') : 'debug';
+        await androidBuild(project, config, { ...options, mode, input: outputPath });
+    }
+    openAndroidStudio(proj, { ...options, studioPath: config.android?.studioPath });
+}
+
 async function integrate(project, config, options) {
     const scaffold = Boolean(options.scaffold);
     const mode = resolveCocosBuildMode(options, scaffold ? 'debug' : 'release');
@@ -2590,13 +2990,12 @@ async function integrate(project, config, options) {
         await cocosBuild(project, effectiveConfig, {
             ...options,
             mode: scaffold ? 'debug' : mode,
-            'output-name': `glory-bootstrap-${timestamp()}`,
         });
     }
     console.log('\n阶段 2/4：应用 glory-adsdk 宿主接入');
     applyIntegration(project, effectiveConfig, options);
     console.log('\n阶段 3/4：生成最终 Cocos Android 工程');
-    const cocosResult = await cocosBuild(project, effectiveConfig, { ...options, mode, 'output-name': String(options['output-name'] || `glory-integrated-${mode}-${timestamp()}`) });
+    const cocosResult = await cocosBuild(project, effectiveConfig, { ...options, mode });
     console.log('\n阶段 4/4：编译并验证 APK');
     const result = await androidBuild(project, effectiveConfig, { ...options, mode, input: cocosResult.outputPath });
     if (scaffold) {
@@ -2673,8 +3072,8 @@ async function main() {
         if (dryRun) console.log('\nDRY RUN：未修改工程。');
         else {
             const latest = findGeneratedProject(project);
-            if (latest) console.log(`最新工程：${latest}`);
-            console.log('Android Studio 打开最新 android-*/proj 再 Rebuild。只 Rebuild 旧目录不会换成 yaml 里的名字。');
+            if (latest) console.log(`当前工程：${latest}`);
+            console.log('Android Studio 打开这一份 proj 再 Rebuild。');
         }
         return;
     }
@@ -2686,6 +3085,17 @@ async function main() {
     if (command === 'android-build') {
         const config = loadConfig(project, options, true).value;
         await androidBuild(project, config, options);
+        return;
+    }
+    if (command === 'open-studio') {
+        const proj = findGeneratedProject(project);
+        if (!proj) throw new CliError('尚无 Android Studio 工程，请先运行 glory-game onboard。');
+        const config = loadConfigUnchecked(project, options, false).value;
+        openAndroidStudio(proj, { ...options, studioPath: config?.android?.studioPath });
+        return;
+    }
+    if (command === 'onboard') {
+        await onboard(project, options);
         return;
     }
     if (command === 'integrate') {
@@ -2709,7 +3119,11 @@ async function main() {
     throw new CliError(`未知命令：${command}\n\n${usage()}`);
 }
 
-main().catch((error) => {
-    console.error(`错误：${error.message}`);
-    process.exitCode = error.exitCode || 1;
-});
+export { inspectProject, requiredIntegrationFailures, gameCenterSecretCheck };
+
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    main().catch((error) => {
+        console.error(`错误：${error.message}`);
+        process.exitCode = error.exitCode || 1;
+    });
+}

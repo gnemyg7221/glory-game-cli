@@ -1,0 +1,12 @@
+# glory-game-managed:gitignore
+# 模块内 Gradle 缓存
+.gradle/
+app/.gradle/
+instantapp/.gradle/
+glory-adsdk/.gradle/
+
+# 本机 Android SDK 路径，不入库
+local.properties
+
+# 本地二进制依赖
+app/libs/

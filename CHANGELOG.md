@@ -14,6 +14,43 @@ glory-game version
 
 ---
 
+## 0.11.0 - 2026-11-08
+
+- SDK 优先复用本机同仓库、含指定 commit 的副本，连同 LFS 二进制复制并校验；已固定版本不再无条件 fetch。
+- SDK 下载显示进度，默认 300 秒超时；保留下载暂存目录，支持重试和 `--sdk-source` / `--sdk-timeout-seconds`。
+- 导出记录输入指纹；首次接入无需第二次 Creator 导出，输入不变时复用现有工程。
+- `onboard` 默认自动打开最终 Android Studio 工程；`--no-open` 关闭，`open-studio` 单独打开。
+- 修复 yaml 已填写密钥仍提示环境变量缺失，以及 appId/appKey 检查名称与阻断条件不一致的问题。
+- 接入复检增加 LFS 文件完整性检查。测试不删除临时目录。
+
+---
+
+## 0.10.0 - 2026-11-07
+
+### 新增
+
+- `glory-game onboard`：读取游戏里已有的 `other/config/apk/oppoConfig`，写入 `glory-game.yaml`。缺 JS 适配层时从 `templates/js-adapter` 补齐；缺 Android 模板时先构建一次；然后 apply、sync，并覆盖当前 Android 工程。`--with-apk` 才编译 debug APK。
+- `sync` 会把 yaml 里已填写的隐私协议地址和截止时间写入 `MyApplication`。
+
+### 变更
+
+- `cocos-build` 默认覆盖当前工程。已有 `build/android-*` 时沿用最新一份，并记在 `build/glory-cli/current-output.txt`。没有旧工程时使用 `build/android`。目录正在被 Gradle、CMake、Ninja 或 aapt2 编译时停止覆盖。
+- 新游戏 `init-config` 钉死的 SDK commit 改为 `8abc0c887670a0736d577766d3950742e955c756`。
+- 缺少 JS 适配层时，`apply` 在写宿主文件之前停止。
+
+---
+
+## 0.9.2 - 2026-10-25
+
+### 新增
+
+- `init-config` 和 `apply` 会补齐游戏仓 `.gitignore`：忽略 library、temp、build、profiles、日志和编辑器目录，只让 `native/engine/android` 与 `native/engine/common` 进版本库。
+- `apply` 同时写 `native/engine/android/.gitignore`，忽略模块内 Gradle 缓存、`local.properties` 和 `app/libs`。不忽略 Gradle Wrapper，也不写入其他游戏的安装包路径。
+
+### 修复
+
+- `inspect` 判断模板能否入库时，检查 `native/engine/android`，避免「只跟踪 Android 模板」的规则被误判成整棵 `native/` 被忽略。
+
 ## 0.9.1 - 2026-10-25
 
 ### 修复

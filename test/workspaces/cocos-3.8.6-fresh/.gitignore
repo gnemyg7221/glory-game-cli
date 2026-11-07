@@ -1,2 +1,31 @@
-# native/ 由 glory-game 管理并纳入版本控制
+# glory-game-managed:gitignore
+# Cocos Creator 本地缓存和构建产物
+library/
+temp/
+local/
 build/
+profiles/
+
+# 本地分析日志
+*.log
+/logs/
+
+# 本地 Gradle 缓存
+.gradle/
+
+# 只跟踪 Android 原生模板和引擎公共文件
+/native/*
+!/native/engine/
+/native/engine/*
+!/native/engine/android/
+!/native/engine/common/
+
+# 依赖和编辑器
+node_modules/
+.vscode/
+.idea/
+.specstory/
+.cursorindexingignore
+
+# 安装包不入库
+*.apk
