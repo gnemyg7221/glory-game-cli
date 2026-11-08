@@ -1,6 +1,6 @@
 # glory-game CLI
 
-独立的 Cocos Android 主库接入 CLI。当前版本为 `0.11.1`，变更见 [CHANGELOG.md](CHANGELOG.md)。
+独立的 Cocos Android 主库接入 CLI。当前版本为 `0.11.2`，变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 按真实项目走一遍的步骤和踩坑，见 [接入水果配](doc/glory-game%20CLI%20接入（以水果配为例）/glory-game%20CLI%20接入（以水果配为例）.md)。给已接好 SDK 的人出工程，见 [cli 接入新工程开发指南](doc/%5B202609%5Dcli%20接入新工程开发指南/%5B202609%5Dcli%20接入新工程开发指南.md)。日常不要用 `integrate`。
 
@@ -140,6 +140,14 @@ glory-game apply --project /path/to/game --config /absolute/path/to/config.json
 如果命令行有 `assembleRelease` / `assembleDebug`，但 Studio 找不到，检查 **Settings → Experimental → Gradle → Configure all Gradle tasks during Gradle Sync**，启用后重新 **Sync Project with Gradle Files**。等同步完成，再用 Studio 的 Assemble 按钮确认实际开始执行构建任务。汉字拆呀拆曾通过此流程恢复。
 
 依赖已缓存时可临时启用 Gradle Offline Mode 加快复检，完成后恢复原来的联网状态。不要用删除导出目录、构建缓存或重新导出 Cocos 来代替模块模型排查。
+
+## OPPO 应用签名
+
+```bash
+glory-game oppo-sign
+```
+
+读取 `other/sign/certificate.pem`，输出去掉冒号的小写 MD5。这串填进 OPPO 开放平台的应用签名。
 
 ## Release 签名
 

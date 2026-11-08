@@ -9,7 +9,7 @@ import { ensureSdkSubmodule, lfsPointers, runSdkGit, verifySdkFiles } from '../l
 import { canReuseExport, recordExport } from '../lib/exports.mjs';
 import { openAndroidStudio } from '../lib/studio.mjs';
 import { ensureIntegrationBranch, INTEGRATION_BRANCH } from '../lib/branch.mjs';
-import { gameCenterSecretCheck, requiredIntegrationFailures } from '../bin/glory-game.mjs';
+import { certificateMd5, gameCenterSecretCheck, requiredIntegrationFailures } from '../bin/glory-game.mjs';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'glory-onboard-tests-')));
 console.log('测试文件已保留：' + root);
@@ -217,4 +217,9 @@ test('自动打开准确的 Studio 工程，支持空格路径、预演和 no-op
     assert.equal(calls.length, 1);
     assert.throws(() => openAndroidStudio(root, { opener }), /不是完整/);
     assert.throws(() => openAndroidStudio(path, { opener: () => ({ status: 1, stderr: 'app unavailable' }) }), /工程已生成/);
+});
+
+test('OPPO 签名是证书 MD5，去掉冒号并小写', () => {
+    const pem = readFileSync(new URL('./fixtures/oppo-certificate.pem', import.meta.url));
+    assert.equal(certificateMd5(pem), '9170af2cff3532e0d5ef8e386a922264');
 });

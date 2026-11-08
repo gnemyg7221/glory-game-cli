@@ -14,6 +14,12 @@ glory-game version
 
 ---
 
+## 0.11.2 - 2026-11-08
+
+- `glory-game oppo-sign` 读取 `other/sign/certificate.pem`，输出 OPPO 后台要填的 MD5 签名。
+
+---
+
 ## 0.11.1 - 2026-11-08
 
 - 固定游戏接入分支为 `feature/integrate_ad_sdk`，`onboard` 自动创建或切换，保留现有提交和工作区改动。

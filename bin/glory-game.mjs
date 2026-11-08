@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, X509Certificate } from 'node:crypto';
 import { copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -17,6 +17,7 @@ const CLI_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI_VERSION = JSON.parse(readFileSync(join(CLI_ROOT, 'package.json'), 'utf8')).version;
 const JS_ADAPTER_TEMPLATE = join(CLI_ROOT, 'templates', 'js-adapter', 'assets');
 const DEFAULT_OPPO_CONFIG = join('other', 'config', 'apk', 'oppoConfig');
+const DEFAULT_OPPO_CERT = join('other', 'sign', 'certificate.pem');
 const STABLE_OUTPUT_NAME = 'android';
 const DEFAULT_CONFIG = 'glory-game.yaml';
 const CONFIG_CANDIDATES = ['glory-game.yaml', 'glory-game.yml', 'glory-game.config.json'];
@@ -106,6 +107,7 @@ function usage() {
                             [--dry-run]
   glory-game integrate --config <path> [--project <path>] [--mode debug|release] [--scaffold] [--dry-run]
   glory-game verify-apk --config <path> --apk <path> [--json]
+  glory-game oppo-sign [--project <path>] [--cert <path>]
   glory-game self-test --config <path> [--project <path>]
 
 当前范围：
@@ -3008,6 +3010,27 @@ async function integrate(project, config, options) {
     return result;
 }
 
+function certificateMd5(pem) {
+    let cert;
+    try {
+        cert = new X509Certificate(pem);
+    } catch (error) {
+        throw new CliError(`无法读取证书：${error.message}`);
+    }
+    return createHash('md5').update(cert.raw).digest('hex');
+}
+
+function oppoSign(project, options) {
+    const raw = options.cert;
+    const certPath = raw
+        ? (isAbsolute(String(raw)) ? resolve(String(raw)) : resolve(project, String(raw)))
+        : join(project, DEFAULT_OPPO_CERT);
+    if (!existsSync(certPath) || !statSync(certPath).isFile()) {
+        throw new CliError(`找不到签名证书：${certPath}`);
+    }
+    console.log(certificateMd5(readFileSync(certPath)));
+}
+
 async function main() {
     const { command, options, positional } = parseArgs(process.argv.slice(2));
     if (command === 'help' || options.help || command === '--help' || command === '-h') {
@@ -3111,6 +3134,10 @@ async function main() {
         selfTest(project, config);
         return;
     }
+    if (command === 'oppo-sign') {
+        oppoSign(project, options);
+        return;
+    }
     if (command === 'verify-apk') {
         const config = loadConfig(project, options, true).value;
         if (!options.apk) throw new CliError('verify-apk 必须通过 --apk 指定 APK');
@@ -3122,7 +3149,7 @@ async function main() {
     throw new CliError(`未知命令：${command}\n\n${usage()}`);
 }
 
-export { inspectProject, requiredIntegrationFailures, gameCenterSecretCheck };
+export { certificateMd5, inspectProject, requiredIntegrationFailures, gameCenterSecretCheck };
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
     main().catch((error) => {
