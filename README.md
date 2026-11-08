@@ -1,6 +1,6 @@
 # glory-game CLI
 
-独立的 Cocos Android 主库接入 CLI。当前版本为 `0.11.2`，变更见 [CHANGELOG.md](CHANGELOG.md)。
+独立的 Cocos Android 主库接入 CLI。当前版本为 `0.11.3`，变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 按真实项目走一遍的步骤和踩坑，见 [接入水果配](doc/glory-game%20CLI%20接入（以水果配为例）/glory-game%20CLI%20接入（以水果配为例）.md)。给已接好 SDK 的人出工程，见 [cli 接入新工程开发指南](doc/%5B202609%5Dcli%20接入新工程开发指南/%5B202609%5Dcli%20接入新工程开发指南.md)。日常不要用 `integrate`。
 
@@ -83,7 +83,7 @@ glory-game status --project /path/to/game-or-repository
 
 新游戏在仓库根目录执行。`glory-game onboard` 读取游戏里已有的 `other/config/apk/oppoConfig`，写入 `glory-game.yaml`。
 
-**游戏接入分支固定为 `feature/integrate_ad_sdk`。** `onboard` 在写入接入文件前自动创建或切换到这个分支，保留现有提交和未提交改动。已有同名分支与当前提交不同时停止并提示先核对；`--dry-run` 只展示计划，不切换分支。不使用 `codex/*` 作为游戏接入分支；CLI 仓库自身的开发分支不受此约定影响。此步骤不自动提交或推送。
+**游戏接入统一使用 `main`，不另建接入分支。** `onboard` 在写入接入文件前确认当前分支；已经在 `main` 时直接继续，不切换分支。缺少 `main` 时从当前提交创建；已有 `main` 与当前提交相同时才直接切换，提交不同时停止提示先核对，不覆盖任何分支或提交。保留暂存区和工作区改动；`--dry-run` 不创建或切换分支。CLI 仓库自身的开发分支不受此约定影响。此步骤不自动提交或推送。
 
 ```bash
 glory-game onboard --dry-run

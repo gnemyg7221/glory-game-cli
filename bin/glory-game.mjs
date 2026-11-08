@@ -115,7 +115,7 @@ function usage() {
 
 快速接入：
   glory-game onboard
-  游戏接入分支固定为 feature/integrate_ad_sdk，自动创建或切换，保留现有改动。
+  游戏接入统一使用 main，不另建接入分支，保留现有提交和改动。
   直接读游戏里已有的 other/config/apk/oppoConfig，写入 glory-game.yaml。不用再手抄 appKey、appId、appSecret。
   缺 JS 适配层时从 CLI 自带快照补齐；首次导出一次，接入后复用工程，自动打开 Android Studio。
   加上 --with-apk 才会编译 debug APK。integrate 仍会编 Gradle，接入不要用它。

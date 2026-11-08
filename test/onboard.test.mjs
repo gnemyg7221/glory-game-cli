@@ -28,7 +28,7 @@ function git(repo, ...args) {
 function repository(name) {
     const path = join(root, name);
     mkdirSync(path, { recursive: true });
-    git(path, 'init', '-q');
+    git(path, 'init', '-q', '-b', 'fixture-base');
     git(path, 'config', 'user.name', 'CLI test');
     git(path, 'config', 'user.email', 'cli-test@example.invalid');
     return path;
@@ -42,19 +42,36 @@ function gameRepository(name) {
     return path;
 }
 
-test('接入固定使用 feature/integrate_ad_sdk，创建分支时保留暂存及未提交文件', () => {
+test('接入统一使用 main，缺少 main 时创建并保留暂存及未提交文件', () => {
     const project = gameRepository('branch-create');
     const head = git(project, 'rev-parse', 'HEAD');
     write(join(project, 'staged.txt'), 'staged change');
     git(project, 'add', 'staged.txt');
     write(join(project, 'untracked.txt'), 'untracked change');
     const status = git(project, 'status', '--porcelain');
-    assert.equal(INTEGRATION_BRANCH, 'feature/integrate_ad_sdk');
+    assert.equal(INTEGRATION_BRANCH, 'main');
     assert.equal(ensureIntegrationBranch(project).action, 'create');
     assert.equal(git(project, 'branch', '--show-current'), INTEGRATION_BRANCH);
     assert.equal(git(project, 'rev-parse', 'HEAD'), head);
     assert.equal(git(project, 'status', '--porcelain'), status);
     assert.equal(ensureIntegrationBranch(project).action, 'reuse');
+});
+
+test('已经在 main 时不另建分支，保留 HEAD、暂存区和工作区', () => {
+    const project = gameRepository('branch-main');
+    git(project, 'switch', '-c', 'main');
+    write(join(project, 'game.txt'), 'pending game change');
+    write(join(project, 'staged.txt'), 'staged change');
+    git(project, 'add', 'staged.txt');
+    const head = git(project, 'rev-parse', 'HEAD');
+    const status = git(project, 'status', '--porcelain');
+    const branches = git(project, 'branch', '--format=%(refname)');
+    assert.equal(ensureIntegrationBranch(project).action, 'reuse');
+    assert.equal(ensureIntegrationBranch(project, { 'dry-run': true }).action, 'reuse');
+    assert.equal(git(project, 'branch', '--show-current'), 'main');
+    assert.equal(git(project, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(project, 'status', '--porcelain'), status);
+    assert.equal(git(project, 'branch', '--format=%(refname)'), branches);
 });
 
 test('接入预演不创建或切换分支，已有同提交接入分支可直接复用', () => {

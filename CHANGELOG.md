@@ -14,6 +14,14 @@ glory-game version
 
 ---
 
+## 0.11.3 - 2026-11-08
+
+- 按用户要求，游戏接入统一使用 `main`，不再创建 `feature/integrate_ad_sdk`。
+- 同步命令帮助、README 和 AGENTS.md，增加已有 `main` 时不创建分支且保留工作区的回归检查。
+- 保留提交不同则停止的保护，不自动合并、覆盖或删除分支。
+
+---
+
 ## 0.11.2 - 2026-11-08
 
 - `glory-game oppo-sign` 读取 `other/sign/certificate.pem`，输出 OPPO 后台要填的 MD5 签名。
