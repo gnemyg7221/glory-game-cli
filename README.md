@@ -83,7 +83,7 @@ glory-game status --project /path/to/game-or-repository
 
 新游戏在仓库根目录执行。`glory-game onboard` 读取游戏里已有的 `other/config/apk/oppoConfig`，写入 `glory-game.yaml`。
 
-**游戏接入统一使用 `main`，不另建接入分支。** `onboard` 在写入接入文件前确认当前分支；已经在 `main` 时直接继续，不切换分支。缺少 `main` 时从当前提交创建；已有 `main` 与当前提交相同时才直接切换，提交不同时停止提示先核对，不覆盖任何分支或提交。保留暂存区和工作区改动；`--dry-run` 不创建或切换分支。CLI 仓库自身的开发分支不受此约定影响。此步骤不自动提交或推送。
+**所有后续游戏接入统一使用 `main`，不另建接入分支。此约定长期有效，不限于某两个游戏，除非用户明确更改要求。** `onboard` 在写入接入文件前确认当前分支；已经在 `main` 时直接继续，不切换分支。缺少 `main` 时从当前提交创建；已有 `main` 与当前提交相同时才直接切换，提交不同时停止提示先核对，不覆盖任何分支或提交。保留暂存区和工作区改动；`--dry-run` 不创建或切换分支。CLI 仓库自身的开发分支不受此约定影响。此步骤不自动提交或推送。
 
 ```bash
 glory-game onboard --dry-run
