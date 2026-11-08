@@ -1,0 +1,67 @@
+# 验证基线：glory-adsdk 8abc0c8 / AGP 8，保留混淆，仅列出确认的外部可选类。
+# glory-game-managed:agp8-external-classes-v1
+# AGP 8 / R8 检出的 SDK 外部类引用；精确到类，不关闭全局校验或混淆。
+-dontwarn android.app.OplusNotificationManager
+-dontwarn android.os.SystemProperties
+-dontwarn com.android.id.impl.IdProviderImpl
+-dontwarn com.bytedance.android.live.base.api.IHostPermission
+-dontwarn com.bytedance.android.live.base.api.LocationProvider
+-dontwarn com.bytedance.android.metrics.ActionType
+-dontwarn com.bytedance.android.metrics.EnterFromMerge
+-dontwarn com.bytedance.android.metrics.EnterMethod
+-dontwarn com.bytedance.android.metrics.LiveMetrics
+-dontwarn com.bytedance.android.metrics.LiveMetricsBuilder
+-dontwarn com.bytedance.android.metrics.Params
+-dontwarn com.bytedance.component.sdk.annotation.AnyThread
+-dontwarn com.bytedance.component.sdk.annotation.CallSuper
+-dontwarn com.bytedance.component.sdk.annotation.ColorInt
+-dontwarn com.bytedance.component.sdk.annotation.DungeonFlag
+-dontwarn com.bytedance.component.sdk.annotation.FloatRange
+-dontwarn com.bytedance.component.sdk.annotation.HungeonFlag
+-dontwarn com.bytedance.component.sdk.annotation.IntRange
+-dontwarn com.bytedance.component.sdk.annotation.Keep
+-dontwarn com.bytedance.component.sdk.annotation.MainThread
+-dontwarn com.bytedance.component.sdk.annotation.RawRes
+-dontwarn com.bytedance.component.sdk.annotation.RequiresApi
+-dontwarn com.bytedance.component.sdk.annotation.RestrictTo$Scope
+-dontwarn com.bytedance.component.sdk.annotation.RestrictTo
+-dontwarn com.bytedance.component.sdk.annotation.UiThread
+-dontwarn com.bytedance.component.sdk.annotation.WorkerThread
+-dontwarn com.bytedance.framwork.core.sdkmonitor.SDKMonitor$IGetExtendParams
+-dontwarn com.bytedance.framwork.core.sdkmonitor.SDKMonitor
+-dontwarn com.bytedance.framwork.core.sdkmonitor.SDKMonitorUtils
+-dontwarn com.bytedance.keva.Keva
+-dontwarn com.bytedance.keva.KevaBuilder
+-dontwarn com.bytedance.keva.KevaMonitor
+-dontwarn com.bytedance.pangle.annotations.ForbidWrapParam
+-dontwarn com.bytedance.sdk.component.video.live.TTLiveVideoPlayer
+-dontwarn com.bytedance.sdk.component.video.ttvideo.TTVideoConfig
+-dontwarn com.bytedance.sdk.component.video.ttvideo.TTVideoPlayer
+-dontwarn com.bytedance.sdk.component.video.ttvideo.cache.TTVideoCacheDirImpl
+-dontwarn com.bytedance.sdk.component.video.ttvideo.preload.TTVideoPreloadImp
+-dontwarn com.opos.cmn.envdev.api.EnvDevConfig
+-dontwarn com.opos.cmn.func.dl.service.DownloadRemoteManager
+-dontwarn com.opos.cmn.func.dl.service.DownloadService
+-dontwarn com.opos.cmn.media.VideoProxyUtils$Listener
+-dontwarn com.opos.cmn.media.VideoProxyUtils
+-dontwarn com.opos.mobad.cmn.func.adhandler.data.DeeplinkData$DetailDeeplinkData
+-dontwarn com.opos.mobad.cmn.func.adhandler.data.DeeplinkData$InstallDeeplinkData
+-dontwarn com.opos.mobad.cmn.func.adhandler.data.DeeplinkData$SurfingDeeplinkData
+-dontwarn com.opos.mobad.template.video.IVideoPlayerFactory
+-dontwarn com.opos.mobad.videoplayer.impl.VideoPlayerFactory
+-dontwarn com.tencent.mm.opensdk.modelbase.BaseReq
+-dontwarn com.tencent.mm.opensdk.modelbiz.WXLaunchMiniProgram$Req
+-dontwarn com.tencent.mm.opensdk.modelbiz.WXOpenBusinessView$Req
+-dontwarn com.tencent.mm.opensdk.openapi.IWXAPI
+-dontwarn com.tencent.mm.opensdk.openapi.WXAPIFactory
+-dontwarn io.protostuff.Tag
+-dontwarn java.awt.Color
+-dontwarn java.awt.Font
+-dontwarn java.awt.Point
+-dontwarn java.awt.Rectangle
+-dontwarn org.springframework.web.bind.annotation.ResponseBody
+-dontwarn springfox.documentation.spring.web.json.Json
+-dontwarn sun.reflect.annotation.AnnotationType
+
+# MobAd 通过反射创建 SQLite factory。
+-keep class androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory { *; }

@@ -14,6 +14,27 @@ glory-game version
 
 ---
 
+## 0.11.5 - 2026-11-08
+
+- Creator 2.4 自动准备 Java 17、Studio 本机 JDK、Gradle 4 GB 堆及 NDK 21 兼容入口；Apple 芯片检测 Rosetta，目录含空格时使用工程路径别名。保留原 NDK 和修改前备份，不清理缓存。
+- 补齐 AppActivity 的 SDK 桥接与返回键、SQLite 等运行依赖、Manifest 合并策略、AGP 8 精确外部类规则。保留 Release 混淆和资源压缩。
+- 2.4 宿主及修复持久化到 build-templates；隐私配置可由 yaml 更新，yaml 未填写时保留宿主已有值。cocos-build 重新导出后自动恢复接入及本机环境；sync、open-studio、android-build、onboard --with-apk 使用 2.4 工程路径。
+- 2.4 资源复制显式声明 Gradle 输入，修复导出新脚本后仍打入旧资源的问题。
+- 新增只读 doctor：复用环境和接入检查，并定位 2.4 资源包大小写及裸 js-base64 引用；不修改游戏业务源码。
+- 新增 smoke-test：可选覆盖安装 APK，冷启动后按 PID 采集日志、截图与 JSON 报告；场景日志命中且应用在前台才标为 pass。没有场景证据或采集时应用未运行则为 review；画面与交互仍需确认。保留应用数据，不自动改签名或清空日志。
+- 测试不再依赖本机 Creator 安装目录；增加隐私保留、模板重入、旧 NDK 参数转发与启动证据分类检查。
+
+---
+
+## 0.11.4 - 2026-11-08
+
+- `onboard` 识别 Creator 2.4 的 `project.json`，用已安装的 2.4.15 导出 `build/jsb-link`，并写入宿主、JsbBridge 和 glory-adsdk。
+- 2.4 游戏沿用已有的 `assets/adsdk`，不套 3.8 适配层快照。
+- `oppo-sign` 在 `other/sign/certificate.pem` 不存在时改读 `sign/certificate.pem`。
+- Creator 2.4 导出工程写入 `org.gradle.java.home`，避免 Android Studio 沿用全局 Java 11。
+
+---
+
 ## 0.11.3 - 2026-11-08
 
 - 按用户要求，游戏接入统一使用 `main`，不再创建 `feature/integrate_ad_sdk`。

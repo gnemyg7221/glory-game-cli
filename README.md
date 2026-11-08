@@ -18,7 +18,7 @@
 - 调用 Gradle 构建 APK，并验证包名、版本、ABI、Launcher、assets 和签名。
 - 一条 `integrate` 命令串联 bootstrap、接入、Cocos 构建、Gradle 构建和 APK 验收。
 
-当前接入器针对 Cocos Creator 3.8.x。已有 JS Native 广告适配层会保留；缺失时 `onboard` 从内置快照补齐，不覆盖已有同名文件。
+Cocos Creator 3.8.x 走 `native/engine/android`。Creator 2.4 走 `project.json` 和 `build/jsb-link`，沿用游戏里已有的 `assets/adsdk`。3.8 缺失适配层时 `onboard` 才从内置快照补齐，不覆盖已有同名文件。
 
 ## 直接运行
 
@@ -126,6 +126,26 @@ glory-game apply --project /path/to/game --config /absolute/path/to/config.json
 ```
 
 `apply` 会在 `build/glory-cli/backups/<timestamp>` 保存被修改文件的原内容，不会删除旧文件。
+
+## 接入与启动验收
+
+后续游戏按“预检 → 接入 → 编译 → 真机验收”处理。详细经验和验收边界见 [批量游戏接入经验](doc/batch-onboarding.md)。
+
+```bash
+glory-game doctor --project /path/to/game
+glory-game onboard --project /path/to/game
+glory-game smoke-test --project /path/to/game --apk /path/to/release.apk --expect-scene Home
+```
+
+`doctor` 只读，检查工具链和宿主；Creator 2.4 还扫描字面量资源包引用的大小写和裸 `js-base64` 引用。报告源码位置，业务脚本不自动改写。已确认的问题以 fail 报告；裸模块是待核对的 warn，静态检查不能覆盖所有运行时路径。
+
+2.4 的 Java 17、Studio JDK、Gradle 内存、旧 NDK 和空格路径由 CLI 准备，接入修复同时写入 `build-templates/jsb-link`，不再要求游戏另跑 Python 准备脚本。Apple 芯片需已安装 Rosetta；缺少时给出明确提示。3.8 保留原有工具链流程。
+
+在 yaml 配置 `privacy.policyUrl` 和 `privacy.skipBeforeTime`，再 `glory-game sync`。未填项保留宿主已有值，CLI 不替游戏猜协议地址或截止时间。
+
+`smoke-test` 默认观察 35 秒，可用 `--seconds` 调整至 1–120 秒；多设备用 `--serial`。`--apk` 可省略以测试已安装版本；提供时先验证 APK 再覆盖安装。签名不匹配时停止，不自动卸载或改签。`--capture-only` 只采集当前进程，不启动或安装；`--dry-run` 不操作设备。
+
+证据保存在游戏的 `build/glory-cli/device-smoke/时间戳/`。指定场景出现 `LoadScene 场景名:` 日志、没有已识别的阻塞错误且应用处于前台时，日志检查为 pass；其余无充分证据的情况为 review。**请查看截图，确认画面正常，再验收交互和广告。** 该命令不清除数据、不清空设备日志、不自动确认隐私或点击广告。
 
 ## Studio 提示找不到构建任务
 

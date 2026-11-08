@@ -2,9 +2,9 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes, X509Certificate } from 'node:crypto';
-import { copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import YAML from 'yaml';
@@ -12,6 +12,10 @@ import { ensureSdkSubmodule, verifySdkFiles } from '../lib/sdk.mjs';
 import { canReuseExport, recordExport } from '../lib/exports.mjs';
 import { openAndroidStudio } from '../lib/studio.mjs';
 import { ensureIntegrationBranch } from '../lib/branch.mjs';
+import { applyCreator2Host, creator2BuildArgument, creator2Output, isCreator2Version, prepareCreator2Settings } from '../lib/cocos2.mjs';
+import { prepareCreator2Environment } from '../lib/cocos2-environment.mjs';
+import { inspectStartupSources } from '../lib/startup-checks.mjs';
+import { deviceSmoke } from '../lib/device-smoke.mjs';
 
 const CLI_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI_VERSION = JSON.parse(readFileSync(join(CLI_ROOT, 'package.json'), 'utf8')).version;
@@ -46,6 +50,15 @@ const VERIFIED_COCOS_38_PROFILE = {
         commit: '8abc0c887670a0736d577766d3950742e955c756',
         gameCenterAppSecretEnv: 'GLORY_GAME_CENTER_APP_SECRET',
     },
+};
+const CREATOR_2_ANDROID = {
+    javaVersion: 17,
+    agpVersion: '8.0.2',
+    gradleVersion: '8.0.2',
+    compileSdk: 30,
+    targetSdk: 30,
+    buildToolsVersion: '30.0.3',
+    ndkVersion: '21.4.7075529',
 };
 const DEFAULT_GAME_ICON = 'assets/icon/ic_launcher.png';
 
@@ -107,11 +120,14 @@ function usage() {
                             [--dry-run]
   glory-game integrate --config <path> [--project <path>] [--mode debug|release] [--scaffold] [--dry-run]
   glory-game verify-apk --config <path> --apk <path> [--json]
+  glory-game doctor [--project <path>] [--config <path>] [--json]
+  glory-game smoke-test [--project <path>] [--apk <path>] [--serial <id>]
+                        [--expect-scene <场景名>] [--seconds 35] [--capture-only] [--dry-run]
   glory-game oppo-sign [--project <path>] [--cert <path>]
   glory-game self-test --config <path> [--project <path>]
 
 当前范围：
-  macOS、Cocos Creator 3.8.x、Android，以及已识别项目结构的 glory-adsdk 接入。
+  macOS、Cocos Creator 2.4 / 3.8.x、Android，以及已识别项目结构的 glory-adsdk 接入。
 
 快速接入：
   glory-game onboard
@@ -173,14 +189,30 @@ function detectJsAdapterLayout(project) {
     return JS_ADAPTER_LAYOUTS.find((layout) => layout.files.every((file) => existsSync(join(project, file)))) || null;
 }
 
-function isCocosProject(path) {
-    const packagePath = join(path, 'package.json');
-    if (!existsSync(packagePath)) return false;
-    try {
-        return Boolean(JSON.parse(readFileSync(packagePath, 'utf8')).creator?.version);
-    } catch {
-        return false;
+function readCreatorDescriptor(project) {
+    const packagePath = join(project, 'package.json');
+    if (existsSync(packagePath)) {
+        try {
+            const pkg = JSON.parse(readFileSync(packagePath, 'utf8'));
+            if (pkg.creator?.version) return { version: String(pkg.creator.version), name: pkg.name || '', source: 'package.json' };
+        } catch {
+            return null;
+        }
     }
+    const projectPath = join(project, 'project.json');
+    if (!existsSync(projectPath)) return null;
+    try {
+        const projectFile = JSON.parse(readFileSync(projectPath, 'utf8'));
+        if (!projectFile.version) return null;
+        if (projectFile.engine !== 'cocos2d-html5' && !String(projectFile.version).startsWith('2.')) return null;
+        return { version: String(projectFile.version), name: projectFile.name || '', source: 'project.json' };
+    } catch {
+        return null;
+    }
+}
+
+function isCocosProject(path) {
+    return Boolean(readCreatorDescriptor(path));
 }
 
 function resolveProjectAt(inputPath) {
@@ -199,7 +231,7 @@ function resolveProjectAt(inputPath) {
         if (integrationTargets.length === 1) return integrationTargets[0];
         throw new CliError(`仓库中发现多个 Cocos 项目，请通过 --project 指定其中一个：\n- ${projects.join('\n- ')}`);
     }
-    throw new CliError(`未找到 Cocos 项目（需要含 creator.version 的 package.json）：${input}`);
+    throw new CliError(`未找到 Cocos 项目（需要 package.json 的 creator.version，或 Creator 2.4 的 project.json）：${input}`);
 }
 
 function rememberedProject() {
@@ -324,16 +356,19 @@ function isSceneUuid(value) {
 }
 
 function listProjectScenes(project) {
-    const files = findFiles(join(project, 'assets'), (path) => path.endsWith('.scene'))
+    const assets = join(project, 'assets');
+    if (!existsSync(assets)) return [];
+    const files = findFiles(assets, (path) => path.endsWith('.scene') || path.endsWith('.fire'))
         .sort((a, b) => a.localeCompare(b));
     return files.map((abs) => {
         const relativePath = relative(project, abs).split(sep).join('/');
         const meta = readOptionalJson(`${abs}.meta`);
+        const ext = abs.endsWith('.fire') ? '.fire' : '.scene';
         return {
             abs,
             path: relativePath,
             uuid: meta?.uuid || null,
-            name: basename(abs, '.scene'),
+            name: basename(abs, ext),
         };
     });
 }
@@ -353,6 +388,8 @@ function sceneCustomScriptCount(absPath) {
 
 function collectCocosStartSceneHints(project) {
     const hints = [];
+    const builder = readOptionalJson(join(project, 'settings', 'builder.json'));
+    if (builder?.startScene) hints.push({ value: builder.startScene, reason: 'settings/builder.json', rank: 0, file: 'builder.json' });
     const profileDir = join(project, 'profiles', 'v2', 'packages');
     if (!existsSync(profileDir)) return hints;
     const rank = {
@@ -403,7 +440,7 @@ function detectStartScene(project) {
 
 function resolveStartSceneUuid(project, startScene) {
     const scenes = listProjectScenes(project);
-    if (!scenes.length) throw new CliError('工程 assets 下没有 .scene 文件。');
+    if (!scenes.length) throw new CliError('工程 assets 下没有场景文件（.scene 或 .fire）。');
     const match = matchScene(scenes, startScene);
     if (!match) {
         throw new CliError(`cocos.startScene 无效：${startScene}\n可选场景：\n- ${scenes.map((scene) => scene.path).join('\n- ')}`);
@@ -585,10 +622,14 @@ function resolveJava(config, defaultMajor = 11) {
 function creatorAndroidToolchain(creatorPath) {
     if (!creatorPath) return null;
     const contents = dirname(dirname(creatorPath));
-    const buildGradle = join(contents, 'Resources', 'resources', '3d', 'engine', 'templates', 'android', 'build', 'build.gradle');
-    const wrapper = join(contents, 'Resources', 'resources', '3d', 'engine', 'templates', 'android', 'build', 'gradle', 'wrapper', 'gradle-wrapper.properties');
-    const agpVersion = readText(buildGradle).match(/com\.android\.tools\.build:gradle:([^'"\s]+)/)?.[1] || null;
-    const gradleVersion = readText(wrapper).match(/gradle-([0-9][^-]*)-(?:bin|all)\.zip/)?.[1] || null;
+    const candidates = [
+        ['Resources', 'resources', '3d', 'engine', 'templates', 'android', 'build'],
+        ['Resources', 'cocos2d-x', 'templates', 'js-template-link', 'frameworks', 'runtime-src', 'proj.android-studio'],
+    ];
+    const root = candidates.map((parts) => join(contents, ...parts)).find((path) => existsSync(join(path, 'build.gradle')));
+    if (!root) return null;
+    const agpVersion = readText(join(root, 'build.gradle')).match(/com\.android\.tools\.build:gradle:([^'"\s]+)/)?.[1] || null;
+    const gradleVersion = readText(join(root, 'gradle', 'wrapper', 'gradle-wrapper.properties')).match(/gradle-([0-9][^-]*)-(?:bin|all)\.zip/)?.[1] || null;
     if (!agpVersion && !gradleVersion) return null;
     return {
         agpVersion,
@@ -598,21 +639,25 @@ function creatorAndroidToolchain(creatorPath) {
 }
 
 function initialConfig(project) {
-    const projectPackage = readJson(join(project, 'package.json'), 'Cocos package.json');
-    const version = projectPackage.creator?.version;
+    const creator = readCreatorDescriptor(project);
+    if (!creator) throw new CliError('未找到 Cocos 项目');
+    const creator2 = isCreator2Version(creator.version);
     const detected = detectStartScene(project);
-    const android = { ...VERIFIED_COCOS_38_PROFILE.android };
-    const projectName = gradleProjectName({ game: { packageName: '' }, android: {} }, project);
+    const android = { ...(creator2 ? CREATOR_2_ANDROID : VERIFIED_COCOS_38_PROFILE.android) };
+    const projectName = creator2 && isGradleProjectName(creator.name)
+        ? creator.name
+        : gradleProjectName({ game: { packageName: '' }, android: {} }, project);
     if (projectName !== 'CocosGame') android.projectName = projectName;
+    const builder = creator2 ? readOptionalJson(join(project, 'settings', 'builder.json')) : null;
     return {
         schemaVersion: 1,
-        profile: VERIFIED_COCOS_38_PROFILE.name,
+        profile: creator2 ? 'glory-oppo-cocos-2.4-v1' : VERIFIED_COCOS_38_PROFILE.name,
         game: {
-            name: projectPackage.name || basename(project),
+            name: creator.name || basename(project),
             packageName: 'REQUIRED',
             versionCode: 1,
             versionName: '1.0.0',
-            orientation: detectedOrientation(project) || 'portrait',
+            orientation: detectedOrientation(project) || (builder?.orientation?.portrait === false ? 'landscape' : 'portrait'),
             offlineGame: false,
             icon: DEFAULT_GAME_ICON,
             appKey: '',
@@ -620,7 +665,8 @@ function initialConfig(project) {
             appSecret: '',
         },
         cocos: {
-            version,
+            version: creator.version,
+            xxteaKey: builder?.xxteaKey || '',
             ...VERIFIED_COCOS_38_PROFILE.cocos,
             startScene: detected?.path || 'REQUIRED',
         },
@@ -874,6 +920,11 @@ function assertOutputIdle(outputPath) {
 }
 
 function findGeneratedProject(project) {
+    const descriptor = readCreatorDescriptor(project);
+    if (isCreator2Version(descriptor?.version)) {
+        const candidate = creator2Output(project);
+        return existsSync(join(candidate, 'gradlew')) ? candidate : null;
+    }
     const pinned = readPinnedOutputName(project);
     if (pinned && isStableOutputName(pinned)) {
         const candidate = join(project, 'build', pinned, 'proj');
@@ -945,8 +996,7 @@ function includesAll(path, fragments) {
 
 function inspectProject(project, config) {
     const checks = [];
-    const projectPackage = readJson(join(project, 'package.json'), 'Cocos package.json');
-    const projectCreatorVersion = projectPackage.creator?.version || null;
+    const projectCreatorVersion = readCreatorDescriptor(project)?.version || null;
     const expectedCreatorVersion = config?.cocos?.version || projectCreatorVersion;
     addCheck(
         checks,
@@ -1023,7 +1073,8 @@ function inspectProject(project, config) {
         addCheck(checks, id, existsSync(target) ? 'pass' : 'fail', `${id.split('.').at(-1)} ${version}${existsSync(target) ? ' 已安装' : ' 未安装'}`, { path: target });
     }
 
-    const nativeRoot = join(project, 'native', 'engine', 'android');
+    const creator2 = isCreator2Version(projectCreatorVersion);
+    const nativeRoot = creator2 ? creator2Output(project) : join(project, 'native', 'engine', 'android');
     const nativeExists = existsSync(nativeRoot);
     const nativeIgnored = gitIgnoresNative(project);
     const cachesIgnored = gitIgnoresBuildCaches(project);
@@ -1074,12 +1125,13 @@ function inspectProject(project, config) {
     if (nativeExists) {
         const manifest = join(nativeRoot, 'app', 'AndroidManifest.xml');
         const appGradle = join(nativeRoot, 'app', 'build.gradle');
-        const appActivity = join(nativeRoot, 'app', 'src', 'com', 'cocos', 'game', 'AppActivity.java');
-        const application = join(nativeRoot, 'app', 'src', 'com', 'cocos', 'game', 'MyApplication.java');
+        const javaPackage = creator2 ? 'org/cocos2dx/javascript' : 'com/cocos/game';
+        const appActivity = join(nativeRoot, 'app', 'src', javaPackage, 'AppActivity.java');
+        const application = join(nativeRoot, 'app', 'src', javaPackage, 'MyApplication.java');
         const proguard = join(nativeRoot, 'app', 'proguard-rules.pro');
-        const settings = join(nativeRoot, 'cocos-settings.gradle');
+        const settings = join(nativeRoot, creator2 ? 'settings.gradle' : 'cocos-settings.gradle');
         const supplier = join(nativeRoot, 'app', 'assets', 'supplierconfig.json');
-        const sdk = join(nativeRoot, 'glory-adsdk');
+        const sdk = creator2 ? join(project, config?.sdk?.submodulePath || 'native/engine/android/glory-adsdk') : join(nativeRoot, 'glory-adsdk');
         addCheck(checks, 'glory.sdk-module', existsSync(sdk) ? 'pass' : 'warn', existsSync(sdk) ? 'glory-adsdk 模块已存在' : '缺少 glory-adsdk 模块');
         if (existsSync(sdk) && config?.sdk?.commit) {
             const commitResult = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: sdk, encoding: 'utf8' });
@@ -1100,19 +1152,21 @@ function inspectProject(project, config) {
                 addCheck(checks, 'glory.sdk-files', 'warn', error.message);
             }
         }
-        addCheck(checks, 'glory.manifest', includesAll(manifest, ['com.cocos.game.MyApplication', 'com.glory.adsdk.launch.GloryAdLaunchActivity']) ? 'pass' : 'warn', 'Manifest 的 Application/Launcher 接入');
-        addCheck(checks, 'glory.app-gradle', includesAll(appGradle, ["project(':glory-adsdk')", 'multiDexEnabled true']) ? 'pass' : 'warn', 'app Gradle 的 SDK/MultiDex 接入');
+        addCheck(checks, 'glory.manifest', includesAll(manifest, [creator2 ? 'org.cocos2dx.javascript.MyApplication' : 'com.cocos.game.MyApplication', 'com.glory.adsdk.launch.GloryAdLaunchActivity']) ? 'pass' : 'warn', 'Manifest 的 Application/Launcher 接入');
+        addCheck(checks, 'glory.app-gradle', includesAll(appGradle, ["project(':glory-adsdk')", creator2 ? 'androidx.multidex:multidex' : 'multiDexEnabled true']) ? 'pass' : 'warn', 'app Gradle 的 SDK/MultiDex 接入');
         addCheck(checks, 'glory.app-activity', includesAll(appActivity, ['AdSdk.onMainActivityReady', 'AdSdk.onBackPressed']) ? 'pass' : 'warn', 'AppActivity 的 SDK 生命周期接入');
         addCheck(checks, 'glory.application', includesAll(application, ['AdSdk.init', 'AdSdkConfig']) ? 'pass' : 'warn', 'MyApplication 的 SDK 初始化');
         addCheck(checks, 'glory.proguard', includesAll(proguard, ['com.nearme.**', 'com.glorious.**', 'com.heytap.**']) ? 'pass' : 'warn', 'OPPO/GameCenter 的 R8 混淆保护');
         addCheck(checks, 'glory.supplier-config', existsSync(supplier) ? 'pass' : 'warn', existsSync(supplier) ? 'supplierconfig.json 已存在' : '缺少 supplierconfig.json');
-        addCheck(checks, 'glory.cocos-settings', includesAll(settings, ["include ':libcocos', ':libservice', ':app', ':glory-adsdk'", "project(':glory-adsdk')"]) ? 'pass' : 'warn', 'Cocos Gradle 模板的 SDK 模块接入');
+        addCheck(checks, 'glory.cocos-settings', includesAll(settings, creator2 ? ["include ':libcocos'", "project(':glory-adsdk')"] : ["include ':libcocos', ':libservice', ':app', ':glory-adsdk'", "project(':glory-adsdk')"]) ? 'pass' : 'warn', 'Cocos Gradle 模板的 SDK 模块接入');
 
         if (config) {
             const manifestContent = readText(manifest);
             const applicationContent = readText(application);
             const supplierConfig = existsSync(supplier) ? readJson(supplier, 'supplierconfig.json') : null;
-            const identityMatches = manifestContent.includes(`package="${config.game.packageName}"`)
+            const identityMatches = (creator2
+                ? readText(appGradle).includes(`namespace "${config.game.packageName}"`)
+                : manifestContent.includes(`package="${config.game.packageName}"`))
                 && applicationContent.includes(`import ${config.game.packageName}.BuildConfig;`);
             addCheck(checks, 'config.game-identity', identityMatches ? 'pass' : 'warn', identityMatches ? '包名和 BuildConfig 与接入配置一致' : '包名或 BuildConfig 与接入配置不一致');
             if (hostValue(config, 'appId')) {
@@ -1135,10 +1189,24 @@ function inspectProject(project, config) {
         }
     }
 
+    if (creator2) {
+        checks.push(...inspectStartupSources(project));
+        if (nativeExists) {
+            const gradle = readText(join(nativeRoot, 'app/build.gradle'));
+            addCheck(checks, 'glory.asset-inputs', /variant\.mergeAssets\.inputs\.files/.test(gradle) ? 'pass' : 'warn', 'Creator 导出资源参与 Gradle 增量检查');
+            const localJava = parseLocalProperties(join(nativeRoot, '.gradle/config.properties'))['java.home'];
+            const idea = readText(join(nativeRoot, '.idea/gradle.xml'));
+            addCheck(checks, 'studio.java-home', localJava === java.path && idea.includes('#GRADLE_LOCAL_JAVA_HOME') ? 'pass' : 'warn', 'Studio 使用已准备的本机 JDK');
+        }
+        if (!config?.privacy?.policyUrl || !config?.privacy?.skipBeforeTime) {
+            addCheck(checks, 'config.privacy', 'warn', '请在 glory-game.yaml 填写 privacy.policyUrl 和 privacy.skipBeforeTime；未填项保留宿主已有值。');
+        }
+    }
+
     return {
         project,
         repositoryRoot: gitRepositoryRoot(project),
-        projectName: projectPackage.name || basename(project),
+        projectName: readCreatorDescriptor(project)?.name || basename(project),
         projectCreatorVersion,
         expectedCreatorVersion,
         creator,
@@ -2075,6 +2143,7 @@ profiles/
 # 只跟踪 Android 原生模板和引擎公共文件
 /native/*
 !/native/engine/
+!/native/cocos2-jsb/
 /native/engine/*
 !/native/engine/android/
 !/native/engine/common/
@@ -2576,7 +2645,112 @@ function normalizeGeneratedGradle(project, gradleProject, config, javaHome, dryR
     return changes;
 }
 
+function prepareCreator2Host(project, proj, config, inspection) {
+    const proguard = join(proj, 'app/proguard-rules.pro');
+    writeFileSync(proguard, transformProguardRules(readText(proguard)), 'utf8');
+    applyCreator2Host(project, proj, config, inspection.java.path);
+    prepareCreator2Environment(project, proj, config, inspection.java.path, inspection.androidSdk);
+}
+
+function creator2Path() {
+    const python27 = join(homedir(), '.local', 'Python.framework', 'Versions', '2.7', 'bin', 'python2.7');
+    const python3 = firstExisting(['/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3']);
+    if (!existsSync(python27) && process.env.PATH?.split(delimiter).some((dir) => existsSync(join(dir, 'python')))) return process.env.PATH;
+    const target = existsSync(python27) ? python27 : python3;
+    if (!target) return process.env.PATH;
+    const bin = join(homedir(), '.config', 'glory-game', 'bin');
+    const python = join(bin, 'python');
+    mkdirSync(bin, { recursive: true });
+    const execLine = existsSync(python27)
+        ? `exec /usr/bin/arch -x86_64 ${JSON.stringify(python27)} "$@"`
+        : `exec ${JSON.stringify(python3)} "$@"`;
+    writeFileSync(python, `#!/bin/sh\n${execLine}\n`);
+    chmodSync(python, 0o755);
+    return `${bin}${delimiter}${process.env.PATH || ''}`;
+}
+
+function rememberCreator2Toolchain(config) {
+    const sdk = resolveAndroidSdk(null, config, null);
+    const ndk = sdkComponentPath(sdk, 'ndk', config.android?.ndkVersion);
+    for (const settingsPath of [
+        join(homedir(), '.CocosCreator', 'settings.json'),
+        join(homedir(), '.CocosCreator', 'profiles', 'settings.json'),
+    ]) {
+        const current = readOptionalJson(settingsPath) || {};
+        if (sdk) {
+            current.android_sdk_root = sdk;
+            current['android-sdk-root'] = sdk;
+        }
+        if (ndk) {
+            current.ndk_root = ndk;
+            current['ndk-root'] = ndk;
+        }
+        if (sdk || ndk) {
+            current.native = { ...(current.native || {}), ...(sdk ? { sdkPath: sdk } : {}), ...(ndk ? { ndkPath: ndk } : {}) };
+        }
+        mkdirSync(dirname(settingsPath), { recursive: true });
+        writeFileSync(settingsPath, `${JSON.stringify(current, null, 2)}\n`, 'utf8');
+    }
+}
+
+async function cocos2Build(project, config, options) {
+    const inspection = inspectProject(project, config);
+    assertRequiredToolchain(inspection, config, 'cocos-build');
+    const mode = resolveCocosBuildMode(options, 'release');
+    const encrypted = mode !== 'debug';
+    if (encrypted && !config.cocos.xxteaKey) config.cocos.xxteaKey = createXxteaKey();
+    const scene = resolveBuildStartScene(project, config);
+    const outputPath = creator2Output(project);
+    const buildRoot = join(project, 'build', 'jsb-link');
+    const argument = creator2BuildArgument(config, scene.uuid, encrypted);
+    const args = ['--nologin', '--force', '--path', project, '--build', argument];
+    console.log(`Creator：${inspection.creator.path}`);
+    console.log(`JDK：${inspection.java.version}（${inspection.java.path}）`);
+    console.log(`模式：${mode}`);
+    console.log(`启动场景：${scene.path}`);
+    console.log(`桌面名称：${config.game.name}`);
+    console.log(`命令：${inspection.creator.path} ${args.map((arg) => JSON.stringify(arg)).join(' ')}\n`);
+    if (options['dry-run']) {
+        console.log('\nDRY RUN：未启动 Creator、未修改工程。');
+        return { outputPath, dryRun: true };
+    }
+    assertOutputIdle(buildRoot);
+    prepareCreator2Settings(project, config);
+    rememberCreator2Toolchain(config);
+    const timeoutMinutes = Number(options['timeout-minutes'] || config.cocos.timeoutMinutes || 30);
+    const transcriptPath = join(project, 'build', 'glory-cli', 'logs', 'jsb-link.console.log');
+    mkdirSync(dirname(transcriptPath), { recursive: true });
+    const result = await runProcess(inspection.creator.path, args, {
+        cwd: project,
+        env: {
+            ...process.env,
+            PATH: creator2Path(),
+            JAVA_HOME: inspection.java.path || process.env.JAVA_HOME,
+            ANDROID_SDK_ROOT: inspection.androidSdk || process.env.ANDROID_SDK_ROOT,
+            NDK_ROOT: sdkComponentPath(inspection.androidSdk, 'ndk', config.android?.ndkVersion) || process.env.NDK_ROOT,
+        },
+        timeoutMs: timeoutMinutes * 60 * 1000,
+        transcriptPath,
+        quiet: !options.verbose,
+    });
+    if (result.timedOut) throw new CliError(`Creator 构建超过 ${timeoutMinutes} 分钟，已停止本次子进程`);
+    if (result.code !== 0) {
+        throw new CliError(`Creator 2.4 构建失败，退出码 ${result.code}。日志：${transcriptPath}`);
+    }
+    if (!existsSync(join(outputPath, 'settings.gradle'))) {
+        throw new CliError(`Creator 没有导出 Android 工程：${outputPath}`);
+    }
+    if (existsSync(join(project, config.sdk.submodulePath, 'build.gradle'))) {
+        prepareCreator2Host(project, outputPath, config, inspection);
+    } else {
+        prepareCreator2Environment(project, outputPath, config, inspection.java.path, inspection.androidSdk);
+    }
+    console.log(`Android 工程：${outputPath}`);
+    return { outputPath, dryRun: false };
+}
+
 async function cocosBuild(project, config, options) {
+    if (isCreator2Version(config.cocos?.version)) return cocos2Build(project, config, options);
     applyCocosPortability(project, Boolean(options['dry-run']));
     await ensureProjectDependencies(project, Boolean(options['dry-run']));
     const inspection = inspectProject(project, config);
@@ -2705,7 +2879,10 @@ async function androidBuild(project, config, options) {
     const gradlew = join(gradleProject, 'gradlew');
     if (!existsSync(gradlew)) throw new CliError(`缺少 Gradle Wrapper：${gradlew}`);
     const secretEnv = hostValue(config, 'gameCenterAppSecretEnv');
-    const managedApplication = readText(join(project, 'native', 'engine', 'android', 'app', 'src', 'com', 'cocos', 'game', 'MyApplication.java'))
+    const creator2 = isCreator2Version(config.cocos?.version);
+    const managedApplication = readText(creator2
+        ? join(gradleProject, 'app/src/org/cocos2dx/javascript/MyApplication.java')
+        : join(project, 'native', 'engine', 'android', 'app', 'src', 'com', 'cocos', 'game', 'MyApplication.java'))
         .includes('BuildConfig.GLORY_GAME_CENTER_APP_SECRET');
     let gameCenterSecret = hostValue(config, 'appSecret') || (secretEnv ? process.env[secretEnv] : null);
     if (!gameCenterSecret && options.scaffold) gameCenterSecret = 'PENDING_CONFIGURATION';
@@ -2715,7 +2892,8 @@ async function androidBuild(project, config, options) {
     if (gameCenterSecret && !/^[A-Za-z0-9._-]+$/.test(gameCenterSecret)) {
         throw new CliError('game.appSecret 含不支持的字符');
     }
-    const normalization = normalizeGeneratedGradle(project, gradleProject, config, inspection.java.path, Boolean(options['dry-run']));
+    if (creator2 && !options['dry-run']) prepareCreator2Host(project, gradleProject, config, inspection);
+    const normalization = creator2 ? [] : normalizeGeneratedGradle(project, gradleProject, config, inspection.java.path, Boolean(options['dry-run']));
     const task = mode === 'debug' ? 'assembleDebug' : 'assembleRelease';
     const transcriptPath = join(project, 'build', 'glory-cli', 'logs', `${basename(input)}-${task}.console.log`);
     console.log(`Gradle 工程：${gradleProject}`);
@@ -2736,7 +2914,7 @@ async function androidBuild(project, config, options) {
     }
     mkdirSync(dirname(transcriptPath), { recursive: true });
     const timeoutMinutes = Number(options['timeout-minutes'] || config.android.timeoutMinutes || 30);
-    const result = await runProcess('bash', [gradlew, task, '--stacktrace'], {
+    const result = await runProcess('bash', [gradlew, task, '--stacktrace', `-Dorg.gradle.java.home=${inspection.java.path}`], {
         cwd: gradleProject,
         env: {
             ...process.env,
@@ -2757,7 +2935,7 @@ async function androidBuild(project, config, options) {
     if (result.timedOut) throw new CliError(`Gradle 构建超过 ${timeoutMinutes} 分钟，已停止本次子进程`);
     if (result.code !== 0) throw new CliError(`Gradle ${task} 失败，退出码 ${result.code ?? 'null'}。日志：${transcriptPath}`);
     const apks = findFiles(
-        join(gradleProject, 'build'),
+        join(gradleProject, creator2 ? 'app/build' : 'build'),
         (path) => path.endsWith('.apk') && path.includes(`${join('outputs', 'apk')}/`) && path.toLowerCase().includes(mode),
     );
     if (apks.length === 0) throw new CliError(`Gradle 成功但未找到 ${mode} APK：${gradleProject}`);
@@ -2916,6 +3094,30 @@ async function onboard(project, options) {
         for (const line of identityChanges) console.log('  ' + line);
     }
     if (!dryRun) saveOnboardConfig(project, configPath, config, existed, identityChanges.length > 0 || sceneChanged);
+    if (isCreator2Version(config.cocos?.version)) {
+        if (!detectJsAdapterLayout(project)) {
+            throw new CliError('Creator 2.4 工程里没有 assets/adsdk/platform/Native。这个版本沿用游戏里已有的适配层，不能套 3.8 的快照。');
+        }
+        const outputPath = creator2Output(project);
+        if (dryRun) {
+            console.log('Creator 2.4 工程：' + outputPath);
+            console.log('已有 JS 适配层会保留。导出后写入宿主、JsbBridge 和 glory-adsdk。');
+            console.log('DRY RUN：未修改工程、未构建、未访问 SDK remote、未打开应用。');
+            return;
+        }
+        console.log('Creator 2.4 导出 Android 工程。');
+        await cocos2Build(project, config, options);
+        console.log('应用 glory-adsdk 宿主接入');
+        ensureSdkSubmodule(project, config, options);
+        prepareCreator2Host(project, outputPath, config, inspection);
+        syncProjectGitignores(project);
+        const sourceChecks = inspectStartupSources(project);
+        for (const check of sourceChecks) console.warn(`! [${check.status}] ${check.message}`);
+        console.log('Android 宿主已准备，运行效果需真机验收。工程：' + outputPath);
+        if (options['with-apk']) await androidBuild(project, config, { ...options, mode: options.mode || 'debug', input: outputPath });
+        openAndroidStudio(outputPath, { ...options, studioPath: config.android?.studioPath });
+        return;
+    }
     const adapterMissing = !detectJsAdapterLayout(project);
     ensureJsAdapter(project, dryRun);
     if (dryRun) {
@@ -2965,6 +3167,9 @@ async function onboard(project, options) {
 }
 
 async function integrate(project, config, options) {
+    if (isCreator2Version(config.cocos?.version)) {
+        return onboard(project, { ...options, 'with-apk': true, 'no-open': true, mode: options.mode || 'release' });
+    }
     const scaffold = Boolean(options.scaffold);
     const mode = resolveCocosBuildMode(options, scaffold ? 'debug' : 'release');
     if (scaffold && mode !== 'debug') throw new CliError('--scaffold 只允许构建 debug，不能生成可发布的 release 包');
@@ -3024,7 +3229,8 @@ function oppoSign(project, options) {
     const raw = options.cert;
     const certPath = raw
         ? (isAbsolute(String(raw)) ? resolve(String(raw)) : resolve(project, String(raw)))
-        : join(project, DEFAULT_OPPO_CERT);
+        : [join(project, DEFAULT_OPPO_CERT), join(project, 'sign', 'certificate.pem')].find((path) => existsSync(path))
+            || join(project, DEFAULT_OPPO_CERT);
     if (!existsSync(certPath) || !statSync(certPath).isFile()) {
         throw new CliError(`找不到签名证书：${certPath}`);
     }
@@ -3060,9 +3266,31 @@ async function main() {
         await configureProject(project, options, positional[0]);
         return;
     }
-    if (command === 'inspect') {
+    if (command === 'inspect' || command === 'doctor') {
         const config = loadConfig(project, options, false).value;
-        printInspection(inspectProject(project, config), Boolean(options.json));
+        const report = inspectProject(project, config);
+        printInspection(report, Boolean(options.json));
+        if (command === 'doctor' && report.checks.some((check) => check.status === 'fail')) process.exitCode = 3;
+        return;
+    }
+    if (command === 'smoke-test') {
+        const config = loadConfig(project, options, true).value;
+        if (options['dry-run']) {
+            console.log(`将${options['capture-only'] ? '采集当前进程' : '启动'} ${config.game.packageName}，${options.apk ? '覆盖安装指定 APK，' : ''}保存 PID 日志、截图与报告。`);
+            console.log('DRY RUN：未操作设备、未安装 APK、未写文件。');
+            return;
+        }
+        const sdk = resolveAndroidSdk(project, config, findGeneratedProject(project));
+        if (options.apk) {
+            const apk = verifyApk(resolve(project, String(options.apk)), config, sdk);
+            if (apk.checks.some((check) => check.status === 'fail')) throw new CliError('APK 验收失败，未安装。');
+        }
+        console.log('正在采集真机启动证据；覆盖安装不卸载应用、不清除数据。');
+        const report = await deviceSmoke(project, config, sdk, options);
+        console.log(`[${report.status.toUpperCase()}] 期望场景：${report.expectedScene || '未指定'}；命中：${report.reachedScene}`);
+        console.log(`报告、日志与截图：${report.directory}`);
+        console.log(report.note);
+        if (report.status === 'fail') process.exitCode = 3;
         return;
     }
     if (command === 'plan') {
@@ -3073,6 +3301,15 @@ async function main() {
     }
     if (command === 'apply') {
         const loadedConfig = loadConfig(project, options, true).value;
+        if (isCreator2Version(loadedConfig.cocos?.version)) {
+            if (options['dry-run']) console.log('DRY RUN：将接入 Creator 2.4 宿主与 SDK，未修改工程。');
+            else {
+                if (!options['skip-submodule']) ensureSdkSubmodule(project, loadedConfig, options);
+                prepareCreator2Host(project, creator2Output(project), loadedConfig, inspectProject(project, loadedConfig));
+                syncProjectGitignores(project);
+            }
+            return;
+        }
         const config = createScaffoldConfig(project, loadedConfig);
         if ([
             hostValue(loadedConfig, 'appKey'),
@@ -3088,6 +3325,17 @@ async function main() {
         return;
     }
     if (command === 'sync') {
+        const loaded = loadConfig(project, options, true).value;
+        if (isCreator2Version(loaded.cocos?.version)) {
+            const proj = creator2Output(project);
+            if (!existsSync(join(proj, 'app/build.gradle'))) throw new CliError('请先运行 glory-game onboard 导出 2.4 工程。');
+            if (options['dry-run']) console.log('DRY RUN：将同步 Creator 2.4 宿主、隐私、模板与本机环境，未修改工程。');
+            else {
+                prepareCreator2Host(project, proj, loaded, inspectProject(project, loaded));
+                console.log('Creator 2.4 宿主、模板与本机环境已同步：' + proj);
+            }
+            return;
+        }
         const nativeRoot = join(project, 'native', 'engine', 'android');
         if (!existsSync(nativeRoot)) {
             throw new CliError('还没有 native/engine/android。先 glory-game apply（或第一次 cocos-build 出模板），再 sync。');
