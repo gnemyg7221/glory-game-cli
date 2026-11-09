@@ -16,6 +16,7 @@ import { applyCreator2Host, creator2BuildArgument, creator2Output, isCreator2Ver
 import { prepareCreator2Environment } from '../lib/cocos2-environment.mjs';
 import { inspectStartupSources } from '../lib/startup-checks.mjs';
 import { deviceSmoke } from '../lib/device-smoke.mjs';
+import { discoverGameIcon, resolveGameIconPath, copyLauncherIcons, inspectLauncherIcons } from '../lib/icons.mjs';
 
 const CLI_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI_VERSION = JSON.parse(readFileSync(join(CLI_ROOT, 'package.json'), 'utf8')).version;
@@ -659,7 +660,7 @@ function initialConfig(project) {
             versionName: '1.0.0',
             orientation: detectedOrientation(project) || (builder?.orientation?.portrait === false ? 'landscape' : 'portrait'),
             offlineGame: false,
-            icon: DEFAULT_GAME_ICON,
+            icon: discoverGameIcon(project) || 'REQUIRED',
             appKey: '',
             appId: '',
             appSecret: '',
@@ -1076,6 +1077,7 @@ function inspectProject(project, config) {
     const creator2 = isCreator2Version(projectCreatorVersion);
     const nativeRoot = creator2 ? creator2Output(project) : join(project, 'native', 'engine', 'android');
     const nativeExists = existsSync(nativeRoot);
+    if (config) checks.push(...inspectLauncherIcons(project, config, [join(nativeRoot, 'res')]));
     const nativeIgnored = gitIgnoresNative(project);
     const cachesIgnored = gitIgnoresBuildCaches(project);
     addCheck(
@@ -1901,36 +1903,11 @@ function gradleProjectName(config, project) {
     return 'CocosGame';
 }
 
-const LAUNCHER_MIPMAPS = ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi'];
-
-function resolveGameIconPath(project, config) {
-    const raw = hostValue(config, 'icon');
-    if (isMissingConfigValue(raw)) return null;
-    const iconPath = isAbsolute(raw) ? raw : resolve(project, raw);
-    if (!existsSync(iconPath) || !statSync(iconPath).isFile()) {
-        console.warn(`桌面图标还不存在，跳过拷贝：${iconPath}`);
-        return null;
-    }
-    if (!/\.png$/i.test(iconPath)) throw new CliError(`桌面图标必须是 PNG：${iconPath}`);
-    return iconPath;
-}
-
 function applyGameIcon(project, config, extraResRoots = [], dryRun = false) {
-    const source = resolveGameIconPath(project, config);
-    if (!source) return [];
+    // Creator 3.8 merges native/res and generated proj/res in the same source set.
+    // Keep one authoritative copy in native/res to avoid duplicate resources.
     const roots = [join(project, 'native', 'engine', 'android', 'res')];
-    const written = [];
-    for (const root of roots) {
-        for (const density of LAUNCHER_MIPMAPS) {
-            const dest = join(root, density, 'ic_launcher.png');
-            written.push(dest);
-            if (!dryRun) {
-                mkdirSync(dirname(dest), { recursive: true });
-                copyFileSync(source, dest);
-            }
-        }
-    }
-    return written;
+    return copyLauncherIcons(project, config, roots, dryRun);
 }
 
 function applyHostCredentials(project, config, dryRun = false) {
@@ -3083,6 +3060,14 @@ async function onboard(project, options) {
     const config = existed ? readConfigDocument(configPath) : initialConfig(project);
     if (filePath) console.log('读取 OPPO 配置：' + filePath);
     const identityChanges = assignIdentity(config, identity);
+    if (isMissingConfigValue(config.game.icon) || (config.game.icon === DEFAULT_GAME_ICON && !existsSync(join(project, DEFAULT_GAME_ICON)))) {
+        const detectedIcon = discoverGameIcon(project);
+        if (detectedIcon) {
+            config.game.icon = detectedIcon;
+            identityChanges.push('game.icon → ' + detectedIcon);
+        }
+    }
+    resolveGameIconPath(project, config);
     const sceneChanged = await ensureStartScene(project, config, !options['non-interactive']);
     if (isMissingConfigValue(config.game?.packageName)) throw new CliError('缺少包名：请提供 other/config/apk/oppoConfig。');
     validateConfig(config);

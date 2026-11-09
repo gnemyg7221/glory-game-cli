@@ -34,6 +34,7 @@ Creator 3.8 与 2.4 使用各自的模板和工具链。2.4 沿用已有 assets/
 | 游戏脚本找不到 js-base64 | 真机 Cannot find module；项目按锁定版本随 assets 提供实现和许可证 | doctor 提示；游戏按证据修复 |
 | 90% loading，Home 找不到 | Android 路径区分大小写，实际 bundle 为 home；业务键和场景名无需跟着改 | doctor 提示；游戏按证据修复 |
 | 修改脚本并重新导出后，新包仍运行旧脚本 | mergeAssets.doLast 的复制源未参与输入检查 | 2.4 模板声明完整资源输入 |
+| 5 款游戏仍显示默认图标 | yaml 指向不存在的 assets/icon/ic_launcher.png，旧逻辑直接跳过；2.4 未同步 launcher 图标 | 自动识别已有品牌 PNG、缺失时报错、同步模板并由 doctor 检查 |
 | 再次执行后漏隐私配置 | yaml 有值时更新，未填时保留宿主已有值；缺配置显式提示 | 2.4 宿主生成与 sync |
 
 ## 本次 CLI 更新的验证
@@ -43,3 +44,5 @@ Creator 3.8 与 2.4 使用各自的模板和工具链。2.4 沿用已有 assets/
 真实 Gradle 验证使用独立临时工程，保留全部测试文件：资源不变时 mergeReleaseAssets 为 UP-TO-DATE；修改一份资源后任务重新执行，输出含最新内容；再次不修改时恢复 UP-TO-DATE。
 
 真机命令在已修复的我逆袭特牛 Release 上验证：冷启动采集到 Home 场景日志，前台检查通过，截图确认首页。此项验证的是新命令与已有 Release；不代表本轮重新编译了所有游戏或验收了所有广告交互。
+
+Creator 2.4 的 app Java 源码直接引用 Git 跟踪的 build-templates/.../app/src；Studio 编辑后可以直接提交。build 下 Java 副本不参与 app 编译。

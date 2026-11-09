@@ -14,6 +14,17 @@ glory-game version
 
 ---
 
+## 0.11.6 - 2026-11-09
+
+- 修复 Creator 2.4 的 OAID 配置生成：保留既有厂商配置，补齐 vivo / xiaomi / huawei / oppo 结构，不再仅生成 oppo。原精简结构会导致 1.0.25 OAID SDK 加载配置失败；真机修复后确认获取成功。
+
+- 修复游戏桌面图标仍为 Cocos 默认图的问题：init-config / onboard 优先识别工程已有的 other/logo、logo 等品牌 PNG，不再无条件写入不存在的默认路径；onboard 可迁移旧的无效默认路径，并将实际选择写回 yaml。
+- 配置缺失、路径不存在、非 PNG 或非正方形图标明确报错；doctor 检查源图和 Android 资源一致性。
+- Creator 2.4 接入、sync 及重新导出时同步 launcher 图标到生成工程与 build-templates；3.8 使用 native/res，避免向同一 sourceSet 写入重复资源。
+- 替换旧图前备份，重复同步无变化时不重写；补齐图标预演、重入、模板及错误路径回归检查。
+
+---
+
 ## 0.11.5 - 2026-11-08
 
 - Creator 2.4 自动准备 Java 17、Studio 本机 JDK、Gradle 4 GB 堆及 NDK 21 兼容入口；Apple 芯片检测 Rosetta，目录含空格时使用工程路径别名。保留原 NDK 和修改前备份，不清理缓存。

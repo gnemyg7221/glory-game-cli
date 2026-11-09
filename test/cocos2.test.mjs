@@ -22,6 +22,7 @@ const config = {
         appKey: 'fixture-key',
         appId: '37145911',
         appSecret: 'fixture-secret',
+        icon: 'icon.png',
     },
     cocos: { apiLevel: 30, appABIs: ['arm64-v8a', 'armeabi-v7a'], xxteaKey: 'fixture-xxtea' },
     android: { compileSdk: 30, targetSdk: 30, buildToolsVersion: '30.0.3' },
@@ -38,12 +39,26 @@ test('Creator 2.4 宿主补丁可以重复执行', () => {
     const project = join(root, 'game');
     const proj = join(project, 'build', 'jsb-link', 'frameworks', 'runtime-src', 'proj.android-studio');
     mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, 'icon.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64'));
     cpSync(template, proj, { recursive: true });
+    mkdirSync(join(proj, 'app/assets'), { recursive: true });
+    writeFileSync(join(proj, 'app/assets/supplierconfig.json'), JSON.stringify({
+        supplier: { vivo: { appid: 'existing-vivo' }, custom: { appid: 'existing-custom' } },
+    }));
     const javaHome = '/Library/Java/JavaVirtualMachines/example-17.jdk/Contents/Home';
     applyCreator2Host(project, proj, config, javaHome);
     const first = readFileSync(join(proj, 'app', 'AndroidManifest.xml'), 'utf8');
     applyCreator2Host(project, proj, config, javaHome);
     const second = readFileSync(join(proj, 'app', 'AndroidManifest.xml'), 'utf8');
+    const supplier = JSON.parse(readFileSync(join(proj, 'app/assets/supplierconfig.json'), 'utf8')).supplier;
+    assert.equal(supplier.vivo.appid, 'existing-vivo');
+    assert.equal(supplier.custom.appid, 'existing-custom');
+    assert.equal(supplier.oppo.appid, config.game.appId);
+    assert.ok(supplier.xiaomi && supplier.huawei);
+    writeFileSync(join(proj, 'app/assets/supplierconfig.json'), JSON.stringify({ supplier: { oppo: { appid: config.game.appId } } }));
+    applyCreator2Host(project, proj, config, javaHome);
+    const repaired = JSON.parse(readFileSync(join(proj, 'app/assets/supplierconfig.json'), 'utf8'));
+    assert.deepEqual(Object.keys(repaired.supplier).sort(), ['huawei', 'oppo', 'vivo', 'xiaomi']);
     assert.equal(first, second);
     assert.match(second, /GloryAdLaunchActivity/);
     assert.match(second, /app_key/);

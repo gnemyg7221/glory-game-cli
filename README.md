@@ -127,6 +127,14 @@ glory-game apply --project /path/to/game --config /absolute/path/to/config.json
 
 `apply` 会在 `build/glory-cli/backups/<timestamp>` 保存被修改文件的原内容，不会删除旧文件。
 
+## 桌面图标
+
+`game.icon` 填游戏已有的正方形 PNG。初次接入会优先识别 `assets/icon/ic_launcher.png`、`other/logo/logo500.png` / `logo320.png` / `logo256.png` / `logo.png`、`logo/logo320.png` / `logo256.png` / `logo.png` 和 `settings/logo-diy.png`，并写入实际路径；请核对选择的图片是否为该游戏品牌图。
+
+修改 yaml 后运行 `glory-game sync`。Creator 3.8 写入 native Android 的五组 mipmap；2.4 同时写入当前工程与 build-templates，重导出可保留。路径错误会明确报错，不再跳过并继续沿用默认图标；`doctor` 会检查源图和 Android 资源是否一致。旧图备份在 `build/glory-cli/backups`。
+
+图标变化需要重新编译并覆盖安装，已安装的旧 APK 不会随源码修改自动变化。
+
 ## 接入与启动验收
 
 后续游戏按“预检 → 接入 → 编译 → 真机验收”处理。详细经验和验收边界见 [批量游戏接入经验](doc/batch-onboarding.md)。

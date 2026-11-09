@@ -21,3 +21,8 @@
 - 编译通过后用真机启动日志和截图验收；smoke-test 的场景日志 pass 不能替代画面和交互确认。
 - doctor 发现游戏脚本资源包大小写或裸模块引用时，报告文件与行号；不要无证据批量改业务 JS。
 - 不执行删除、清理缓存、卸载应用或清除数据的操作；确有需要时先征得用户许可。
+
+# Android 工程目录约定
+
+- Android Studio 工程继续放在引擎标准的 build 导出目录，不另搬工程、不新增替代工程目录。Creator 2.4 使用 build/jsb-link/frameworks/runtime-src/proj.android-studio；Creator 3.x 使用 build/android/proj。
+- build 中的 APK、缓存、日志和备份不提交。Studio 中编辑的宿主 Java 必须引用 Git 跟踪的源码；Creator 2.4 使用已有 build-templates 宿主源码，Creator 3.x 使用 native/engine/android。不得让用户编辑的内容只落在被忽略的 build 副本中。
